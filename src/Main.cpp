@@ -26,7 +26,8 @@ int main() {
         boost::asio::io_context ioContextPoints;
 
         threads.emplace_back([&]() { pipeline.runOusterLidarListener(ioContextPoints, pointsHost, pointsPort, bufferSize, std::vector<int>{0}); });
-
+        threads.emplace_back([&]() { pipeline.runVisualizer(std::vector<int>{1}); });
+        
         while (Pipeline::running_.load(std::memory_order_acquire)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
