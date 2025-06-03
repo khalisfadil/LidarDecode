@@ -3,6 +3,7 @@
 std::atomic<bool> Pipeline::running_{true};
 std::condition_variable Pipeline::globalCV_;
 boost::lockfree::spsc_queue<LidarDataFrame, boost::lockfree::capacity<128>> Pipeline::decodedPoint_buffer_;
+boost::lockfree::spsc_queue<LidarIMUDataFrame, boost::lockfree::capacity<128>> Pipeline::decodedLidarIMU_buffer_;
 
 // -----------------------------------------------------------------------------
 
@@ -68,7 +69,7 @@ void Pipeline::runOusterLidarListenerSingleReturn(boost::asio::io_context& ioCon
     UdpSocket listener(ioContext, host, port,
         // Lambda callback:
         [&](const std::vector<uint8_t>& packet_data) {
-            LidarDataFrame frame_data_copy; // 1. Local DataFrame created.
+            // LidarDataFrame frame_data_copy; // 1. Local DataFrame created.
                                        //    It will hold a deep copy of the lidar data.
 
             // 2. lidarCallback processes the packet.
@@ -162,7 +163,7 @@ void Pipeline::runOusterLidarListenerLegacy(boost::asio::io_context& ioContext,
     UdpSocket listener(ioContext, host, port,
         // Lambda callback:
         [&](const std::vector<uint8_t>& packet_data) {
-            LidarDataFrame frame_data_copy; // 1. Local DataFrame created.
+            // LidarDataFrame frame_data_copy; // 1. Local DataFrame created.
                                        //    It will hold a deep copy of the lidar data.
 
             // 2. lidarCallback processes the packet.
@@ -338,7 +339,7 @@ void Pipeline::runVisualizer(const std::vector<int>& allowedCores) {
     setThreadAffinity(allowedCores);
 
     try {
-        if (!vis.CreateVisualizerWindow("3D Point Cloud Visualization", 1280, 720, 50, 50, true)) { // Added visible=true
+        if (!vis.CreateVisualizerWindow("3D Point Cloud Visualization", 2560, 1440, 50, 50, true)) { // Added visible=true
             { // Scope for lock
                 std::lock_guard<std::mutex> lock(consoleMutex);
                 std::cerr << "[Pipeline] Visualizer: Failed to create window." << std::endl;
@@ -347,29 +348,28 @@ void Pipeline::runVisualizer(const std::vector<int>& allowedCores) {
         }
         // Access render option after window creation
         vis.GetRenderOption().background_color_ = Eigen::Vector3d(0.05, 0.05, 0.05); // Dark grey background
-        vis.GetRenderOption().point_size_ = 1.5; // Slightly larger points
+        vis.GetRenderOption().point_size_ = 1.0; // Slightly larger points
+
+        // Setup camera
+        auto& view_control = vis.GetViewControl();
+        view_control.SetLookat({0.0, 0.0, 0.0});    // Look at origin
+        view_control.SetFront({0.0, 0.0, -1.0}); // Camera slightly tilted down, looking from +Y
+        view_control.SetUp({0.0, 1.0, 0.0});     // Z is up
+        // view_control.Scale(0.1);               // Zoom level (smaller value = more zoomed in)
 
         // Initialize point_cloud_ptr_ if it hasn't been already
         if (!point_cloud_ptr_) {
             point_cloud_ptr_ = std::make_shared<open3d::geometry::PointCloud>();
             // Optionally add a placeholder point if you want to see something before data arrives,
             // or leave it empty. updatePtCloudStream will handle empty frames.
-            // point_cloud_ptr_->points_.push_back(Eigen::Vector3d(0, 0, 0));
-            // point_cloud_ptr_->colors_.push_back(Eigen::Vector3d(1, 0, 0)); 
+            point_cloud_ptr_->points_.push_back(Eigen::Vector3d(0, 0, 0));
+            point_cloud_ptr_->colors_.push_back(Eigen::Vector3d(1, 0, 0)); 
         }
         vis.AddGeometry(point_cloud_ptr_);
 
         // Add a coordinate frame for reference
-        auto coord_frame = open3d::geometry::TriangleMesh::CreateCoordinateFrame(1.0); // Size 1.0 meter
+        auto coord_frame = open3d::geometry::TriangleMesh::CreateCoordinateFrame(5.0); // Size 1.0 meter
         vis.AddGeometry(coord_frame);
-
-        // Setup camera
-        auto& view_control = vis.GetViewControl();
-        view_control.SetLookat({0.0, 0.0, 0.0});    // Look at origin
-        view_control.SetFront({0.0, -1.0, -0.5}); // Camera slightly tilted down, looking from +Y
-        view_control.SetUp({0.0, 0.0, 1.0});     // Z is up
-        view_control.SetZoom(0.2);               // Zoom level (smaller value = more zoomed in)
-
 
         // Register the animation callback
         // The lambda captures 'this' to call the member function updateVisualizer.
@@ -414,6 +414,7 @@ bool Pipeline::updateVisualizer(open3d::visualization::Visualizer* vis_ptr) {
 
     LidarDataFrame frame_to_display;
     bool new_frame_available = false;
+    auto& view_control = vis_ptr->GetViewControl();
 
     // Consume all frames currently in the buffer, but only process the latest one for display.
     // This helps the visualizer "catch up" if the producer is faster.
@@ -428,12 +429,15 @@ bool Pipeline::updateVisualizer(open3d::visualization::Visualizer* vis_ptr) {
         // Process the latest available frame
         // The condition `frame_to_display.numberpoints > 0` is implicitly handled
         // by updatePtCloudStream, which will clear the cloud if numberpoints is 0.
+        // std::cerr << "numpoint in decoded: " << frame_to_display.numberpoints << std::endl; //both show same value
         updatePtCloudStream(point_cloud_ptr_, frame_to_display);
         geometry_needs_update = true; // Assume geometry changed if we processed a new frame
     }
 
     if (geometry_needs_update) {
         vis_ptr->UpdateGeometry(point_cloud_ptr_); // Tell Open3D to refresh this geometry
+        view_control.Scale(0.1);
+        // std::cerr << "numpoint in visualizer: " << point_cloud_ptr_->points_.size() << std::endl; // both show same value
     }
 
     // Frame rate limiter: ensure this function call (including processing and sleep)
@@ -510,6 +514,7 @@ void Pipeline::updatePtCloudStream(std::shared_ptr<open3d::geometry::PointCloud>
             );
         }
     }
+    
 
     // VoxelDownSample:
     // The original call ptCloud_ptr->VoxelDownSample(1); was problematic:

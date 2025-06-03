@@ -11,24 +11,22 @@
 #include <immintrin.h>
 #endif
 
+
 // Endian conversion (ensure these are available, e.g. via <endian.h> on Linux/glibc, or provide fallback)
 // For cross-platform, you might need custom implementations or a library.
 // Assuming htobe16, htole16, etc. are available or defined elsewhere.
 // For this example, we'll assume standard Linux/glibc style. If not, this part needs attention.
-#if __BYTE_ORDER == __LITTLE_ENDIAN
-#define le16toh(x) (x)
-#define le32toh(x) (x)
-#define le64toh(x) (x)
-#else
 #include <endian.h> // For leXXtoh functions if on a big-endian system with glibc
 // Or define manually:
 // static inline uint16_t le16toh_manual(uint16_t le_val) {
 //     return (le_val >> 8) | (le_val << 8);
 // } // etc. for 32 and 64
-#endif
+
 
 
 using json = nlohmann::json;
+
+// -----------------------------------------------------------------------------
 
 OusterLidarCallback::OusterLidarCallback(const std::string& json_path) {
     std::ifstream file(json_path);
@@ -45,10 +43,14 @@ OusterLidarCallback::OusterLidarCallback(const std::string& json_path) {
     initialize();
 }
 
+// -----------------------------------------------------------------------------
+
 OusterLidarCallback::OusterLidarCallback(const json& json_data) {
     parse_metadata(json_data);
     initialize();
 }
+
+// -----------------------------------------------------------------------------
 
 void OusterLidarCallback::parse_metadata(const json& json_data_param) {
     if (!json_data_param.is_object()) {
@@ -72,11 +74,10 @@ void OusterLidarCallback::parse_metadata(const json& json_data_param) {
              throw std::runtime_error("Missing or invalid 'lidar_intrinsics.lidar_to_sensor_transform'");
         }
 
-
         columns_per_frame_ = metadata_["lidar_data_format"]["columns_per_frame"].get<int>();
         pixels_per_column_ = metadata_["lidar_data_format"]["pixels_per_column"].get<int>();
         columns_per_packet_ = metadata_["config_params"]["columns_per_packet"].get<int>();
-        // signal_multiplier_ = metadata_["config_params"]["signal_multiplier"].get<double>(); // Unused in provided code
+        udp_profile_lidar_ = metadata_["config_params"]["udp_profile_lidar"].get<std::string>();
 
         const auto& beam_intrinsics = metadata_["beam_intrinsics"];
         lidar_origin_to_beam_origin_mm_ = beam_intrinsics["lidar_origin_to_beam_origin_mm"].get<double>();
@@ -114,36 +115,35 @@ void OusterLidarCallback::parse_metadata(const json& json_data_param) {
     }
 }
 
-void OusterLidarCallback::initialize() {
-    // Determine packet structure based on udp_profile_lidar from metadata
-    const size_t CHANNEL_STRIDE_BYTES = 12; // Stride for accessing each channel(pixel)'s data block (range, signal, etc.)
-    size_t COLUMN_HEADER_BYTES = 12; // Default for single return
-    size_t STATUS_BYTES = 0; // Only used in legacy format
+// -----------------------------------------------------------------------------
 
-    if (metadata_.contains("udp_profile_lidar") && metadata_["udp_profile_lidar"].is_string()) {
-        std::string udp_profile_lidar = metadata_["udp_profile_lidar"].get<std::string>();
-        if (udp_profile_lidar == "RNG19_RFL8_SIG16_NIR16") {
-            COLUMN_HEADER_BYTES = 12;
-            header_size_ = 32; // Single return has 32-byte packet header
-            footer_size_ = 32; // Single return has 32-byte packet footer
-        } else if (udp_profile_lidar == "LEGACY") {
-            COLUMN_HEADER_BYTES = 16;
-            STATUS_BYTES = 4; // Legacy format includes 4-byte status per measurement block
-            header_size_ = 0; // Legacy has no packet header
-            footer_size_ = 0; // Legacy has no packet footer
-        } else {
-            throw std::runtime_error("Unsupported udp_profile_lidar: " + udp_profile_lidar);
-        }
+void OusterLidarCallback::initialize() {
+
+    if (udp_profile_lidar_ == "RNG19_RFL8_SIG16_NIR16") {
+        PACKET_HEADER_BYTES = 32;     // Assumed size of data before the first measurement block in the packet (bytes)
+        PACKET_FOOTER_BYTES = 32;     // Assumed size of data after the last measurement block
+        COLUMN_HEADER_BYTES = 12;
+        CHANNEL_STRIDE_BYTES = 12;
+        MEASUREMENT_BLOCK_STATUS_BYTES = 0;
+    } else if (udp_profile_lidar_ == "LEGACY") {
+        PACKET_HEADER_BYTES = 0;     // Assumed size of data before the first measurement block in the packet (bytes)
+        PACKET_FOOTER_BYTES = 0;     // Assumed size of data after the last measurement block
+        COLUMN_HEADER_BYTES = 16;
+        CHANNEL_STRIDE_BYTES = 12;
+        MEASUREMENT_BLOCK_STATUS_BYTES = 4;
     } else {
-        // Fallback to default single return format if udp_profile_lidar is missing
-        std::cerr << "Warning: udp_profile_lidar not found in metadata, defaulting to RNG19_RFL8_SIG16_NIR16" << std::endl;
-        header_size_ = 32;
-        footer_size_ = 32;
+        throw std::runtime_error("Unsupported udp_profile_lidar: " + udp_profile_lidar_);
     }
 
     // Calculate block_size and expected_size
-    block_size_ = COLUMN_HEADER_BYTES + (pixels_per_column_ * CHANNEL_STRIDE_BYTES) + STATUS_BYTES;
-    expected_size_ = header_size_ + (columns_per_packet_ * block_size_) + footer_size_;
+    //single return:
+    // block size = 12 + (128 * 12) + 0 = 1548
+    // expected size = 32 + (16 * 1548) + 23 = 24823
+    //legacy:
+    // block size = 16 + (128 * 12) + 4 = 1556
+    // expected size = 0 + (16 * 1556) + 0 = 24896
+    block_size_ = COLUMN_HEADER_BYTES + (pixels_per_column_ * CHANNEL_STRIDE_BYTES) + MEASUREMENT_BLOCK_STATUS_BYTES;
+    expected_size_ = PACKET_HEADER_BYTES + (columns_per_packet_ * block_size_) + PACKET_FOOTER_BYTES;
 
     const auto& beam_intrinsics = metadata_["beam_intrinsics"];
     const auto& azimuth_angles_json = beam_intrinsics["beam_azimuth_angles"];
@@ -247,6 +247,8 @@ void OusterLidarCallback::initialize() {
 #endif
 }
 
+// -----------------------------------------------------------------------------
+
 void OusterLidarCallback::decode_packet_single_return(const std::vector<uint8_t>& packet, LidarDataFrame& frame) {
     if (packet.size() != expected_size_) {
         std::cerr << "Invalid packet size: " << packet.size() << ", expected: " << expected_size_ << std::endl;
@@ -301,7 +303,7 @@ void OusterLidarCallback::decode_packet_single_return(const std::vector<uint8_t>
     bool is_first_point_of_current_frame = (this->number_points_ == 0);
 
     for (int col = 0; col < columns_per_packet_; ++col) {
-        size_t block_offset = header_size_ + col * block_size_; // header_size_ is offset to first block from packet start
+        size_t block_offset = PACKET_HEADER_BYTES + col * block_size_; // header_size_ is offset to first block from packet start
 
         uint64_t timestamp_ns_raw;
         std::memcpy(&timestamp_ns_raw, packet.data() + block_offset, sizeof(uint64_t));
@@ -498,6 +500,8 @@ void OusterLidarCallback::decode_packet_single_return(const std::vector<uint8_t>
     frame = get_latest_lidar_frame();
 }
 
+// -----------------------------------------------------------------------------
+
 void OusterLidarCallback::decode_packet_legacy(const std::vector<uint8_t>& packet, LidarDataFrame& frame) {
     if (packet.size() != expected_size_) {
         std::cerr << "Invalid packet size: " << packet.size() << ", expected: " << expected_size_ << std::endl;
@@ -514,7 +518,7 @@ void OusterLidarCallback::decode_packet_legacy(const std::vector<uint8_t>& packe
     double prev_frame_completed_latest_ts = 0.0;
 
     for (int col = 0; col < columns_per_packet_; ++col) {
-        size_t block_offset = col * block_size_; // header_size_ in legacy format is set to 0
+        size_t block_offset = col * block_size_; // PACKET_HEADER_BYTES in legacy format is set to 0
 
         uint64_t timestamp_ns_raw;
         std::memcpy(&timestamp_ns_raw, packet.data() + block_offset, sizeof(uint64_t));
@@ -730,6 +734,7 @@ void OusterLidarCallback::decode_packet_legacy(const std::vector<uint8_t>& packe
     frame = get_latest_lidar_frame();
 }
 
+// -----------------------------------------------------------------------------
 
 void OusterLidarCallback::decode_packet_LidarIMU(const std::vector<uint8_t>& packet, LidarIMUDataFrame& frame) {
     // Expected IMU packet size: 48 bytes (8+8+8+4+4+4+4+4+4)
@@ -789,4 +794,6 @@ void OusterLidarCallback::decode_packet_LidarIMU(const std::vector<uint8_t>& pac
         return;
     }
 }
+
+// -----------------------------------------------------------------------------
 

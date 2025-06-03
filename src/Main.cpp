@@ -1,7 +1,7 @@
 #include <Pipeline.hpp>
 
 int main() {
-    std::string json_path = "/home/khalis/Sync/SensorSOW/Arbeitspakete/MATLAB/Developement/033_DecodeLidar_RNG19_RFL8_SIG16_NIR1/json/20250520_1329_OS-2-128_122446000745.json";
+    std::string json_path = "/home/khalis/Sync/SensorSOW/Arbeitspakete/MATLAB/Developement/033_DecodeLidar_RNG19_RFL8_SIG16_NIR1/json/RNG19_RFL8_SIG16_NIR16_128x2048.json";
     uint32_t lidar_packet_size = 24832;
 
     // Read and parse JSON file to get udp_profile_lidar and udp_port_lidar
@@ -14,25 +14,32 @@ int main() {
             std::cerr << "[Main] Error: Could not open JSON file: " << json_path << std::endl;
             return EXIT_FAILURE;
         }
-        nlohmann::json json_data;
-        json_file >> json_data;
+        nlohmann::json metadata_;
+        json_file >> metadata_;
         json_file.close(); // Explicitly close the file
-        udp_profile_lidar = json_data.value("udp_profile_lidar", "UNKNOWN");
-        // Use default port if udp_port_lidar is missing or invalid
-        if (json_data.contains("udp_port_lidar") && json_data["udp_port_lidar"].is_number_integer()) {
-            udp_port_lidar = json_data["udp_port_lidar"].get<uint16_t>();
-        } else {
-            std::cerr << "[Main] Warning: udp_port_lidar missing or invalid in JSON" << std::endl;
+
+        if (!metadata_.contains("lidar_data_format") || !metadata_["lidar_data_format"].is_object()) {
+            throw std::runtime_error("Missing or invalid 'lidar_data_format' object");
             return EXIT_FAILURE;
+        }
+        if (!metadata_.contains("config_params") || !metadata_["config_params"].is_object()) {
+            throw std::runtime_error("Missing or invalid 'config_params' object");
+            return EXIT_FAILURE;
+        }
+        if (!metadata_.contains("beam_intrinsics") || !metadata_["beam_intrinsics"].is_object()) {
+            throw std::runtime_error("Missing or invalid 'beam_intrinsics' object");
+            return EXIT_FAILURE;
+        }
+        if (!metadata_.contains("lidar_intrinsics") || !metadata_["lidar_intrinsics"].is_object() ||
+            !metadata_["lidar_intrinsics"].contains("lidar_to_sensor_transform")) {
+             throw std::runtime_error("Missing or invalid 'lidar_intrinsics.lidar_to_sensor_transform'");
+             return EXIT_FAILURE;
         }
 
-        // Use default port if udp_port_lidar is missing or invalid
-        if (json_data.contains("udp_dest")) {
-            udp_dest = json_data["udp_dest"];
-        } else {
-            std::cerr << "[Main] Warning: udp_dest missing or invalid in JSON" << std::endl;
-            return EXIT_FAILURE;
-        }
+        udp_profile_lidar = metadata_["config_params"]["udp_profile_lidar"].get<std::string>();
+        udp_port_lidar = metadata_["config_params"]["udp_port_lidar"].get<uint16_t>();
+        udp_dest = metadata_["config_params"]["udp_dest"].get<std::string>();
+
     } catch (const std::exception& e) {
         std::cerr << "[Main] Error parsing JSON: " << e.what() << std::endl;
         return EXIT_FAILURE;
@@ -69,7 +76,7 @@ int main() {
 
         switch (profile) {
             case LidarProfile::RNG19_RFL8_SIG16_NIR16:
-                std::cout << "[Main] Detected RNG19_RFL8_SIG16_NIR16 profile." << std::endl;
+                std::cout << "[Main] Detected RNG19_RFL8_SIG16_NIR16 lidar udp profile." << std::endl;
                 // Use default parameters or adjust if needed
                 threads.emplace_back([&]() { 
                     pipeline.runOusterLidarListenerSingleReturn(ioContextPoints, udp_dest, udp_port_lidar, lidar_packet_size, std::vector<int>{0}); 
@@ -77,7 +84,7 @@ int main() {
                 break;
 
             case LidarProfile::LEGACY:
-                std::cout << "[Main] Detected LEGACY profile." << std::endl;
+                std::cout << "[Main] Detected LEGACY lidar udp profile." << std::endl;
                 // Example: Adjust buffer size or port for LEGACY mode if needed
                 // bufferSize = 16384; // Example adjustment
                 threads.emplace_back([&]() { 

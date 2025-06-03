@@ -49,10 +49,14 @@ private:
     size_t expected_size_;        // Expected total packet size, calculated from columns_per_packet_ & block_size_
     
     // Default values, can be overridden by JSON or remain if not in JSON (though code expects them)
-    size_t header_size_ = 32;     // Assumed size of data before the first measurement block in the packet (bytes)
-    size_t footer_size_ = 32;     // Assumed size of data after the last measurement block
+    size_t PACKET_HEADER_BYTES = 32;     // Assumed size of data before the first measurement block in the packet (bytes)
+    size_t PACKET_FOOTER_BYTES = 32;     // Assumed size of data after the last measurement block
+    size_t COLUMN_HEADER_BYTES = 12;
+    size_t CHANNEL_STRIDE_BYTES = 12;
+    size_t MEASUREMENT_BLOCK_STATUS_BYTES = 0;
     
     // Metadata-derived parameters
+    std::string udp_profile_lidar_ = "UNKNOWN";
     int columns_per_frame_ = 2048;
     int pixels_per_column_ = 128;
     int columns_per_packet_ = 16; // Default, will be read from JSON

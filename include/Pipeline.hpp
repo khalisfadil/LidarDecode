@@ -13,6 +13,7 @@
 #include <UdpSocket.hpp>
 #include <OusterLidarCallback.hpp>
 #include <LidarDataframe.hpp>
+#include <LidarIMUDataFrame.hpp>
 
 class Pipeline {
     public:
@@ -42,6 +43,7 @@ class Pipeline {
         uint64_t Accelerometer_Read_Time_ = 0.0;
         uint64_t Gyroscope_Read_Time_ = 0.0;
 
+        LidarDataFrame frame_data_copy;
 
         std::shared_ptr<open3d::geometry::PointCloud> point_cloud_ptr_;
 
