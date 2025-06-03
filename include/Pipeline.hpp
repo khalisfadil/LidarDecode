@@ -5,6 +5,7 @@
 #include <memory>
 #include <thread>
 #include <iostream>
+#include <fstream>
 #include <chrono>
 #include <Eigen/Dense>
 #include <open3d/Open3D.h>
@@ -26,7 +27,8 @@ class Pipeline {
         // ~Pipeline();
         static void signalHandler(int signal);
         void setThreadAffinity(const std::vector<int>& coreIDs);
-        void runOusterLidarListener(boost::asio::io_context& ioContext, const std::string& host, uint16_t port, uint32_t bufferSize, const std::vector<int>& allowedCores); 
+        void runOusterLidarListenerSingleReturn(boost::asio::io_context& ioContext, const std::string& host, uint16_t port, uint32_t bufferSize, const std::vector<int>& allowedCores);
+        void runOusterLidarListenerLegacy(boost::asio::io_context& ioContext, const std::string& host, uint16_t port, uint32_t bufferSize, const std::vector<int>& allowedCores);  
         void runOusterLidarIMUListener(boost::asio::io_context& ioContext, const std::string& host, uint16_t port, uint32_t bufferSize, const std::vector<int>& allowedCores); 
         void runVisualizer(const std::vector<int>& allowedCores);
 

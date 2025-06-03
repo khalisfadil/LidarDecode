@@ -50,7 +50,7 @@ void Pipeline::setThreadAffinity(const std::vector<int>& coreIDs) {
 
 // -----------------------------------------------------------------------------
 
-void Pipeline::runOusterLidarListener(boost::asio::io_context& ioContext,
+void Pipeline::runOusterLidarListenerSingleReturn(boost::asio::io_context& ioContext,
                                       const std::string& host,
                                       uint16_t port,
                                       uint32_t bufferSize,
@@ -76,6 +76,100 @@ void Pipeline::runOusterLidarListener(boost::asio::io_context& ioContext,
             //    (via DataFrame::operator=) the contents of lidarCallback's completed buffer.
             //    This results in a deep copy into frame_data_copy.
             lidarCallback.decode_packet_single_return(packet_data, frame_data_copy);
+
+            // 3. Now frame_data_copy is an independent, deep copy of the relevant frame.
+            //    We can safely use it and then move it into the queue.
+            if (frame_data_copy.numberpoints > 0 && frame_data_copy.frame_id != this->frame_id_) {
+                this->frame_id_ = frame_data_copy.frame_id;
+                
+                // 4. Move frame_data_copy into the SPSC queue.
+                //    This transfers ownership of frame_data_copy's internal resources (vector data)
+                //    to the element constructed in the queue, avoiding another full copy.
+                //    frame_data_copy is left in a valid but unspecified (likely empty) state.
+                if (!decodedPoint_buffer_.push(std::move(frame_data_copy))) {
+                    std::lock_guard<std::mutex> lock(consoleMutex);
+                    std::cerr << "[Pipeline] Listener: SPSC buffer push failed for frame " 
+                              << this->frame_id_ // Use this->frame_id_ as frame_data_copy might be moved-from
+                              << ". Buffer Lidar Points might be full." << std::endl;
+                }
+            }
+            // frame_data_copy goes out of scope here. If it was moved, its destruction is trivial.
+            // If it was not pushed (e.g., due to condition not met), it's destructed normally (releasing its copied data).
+        }, // End of lambda
+        bufferSize);
+
+        // Main loop to run Asio's I/O event processing.
+        while (running_.load(std::memory_order_acquire)) {
+            try {
+                ioContext.run(); // This will block until work is done or ioContext is stopped.
+                                 // If it returns without an exception, it implies all work is done.
+                if (!running_.load(std::memory_order_acquire)) { // Check running_ again if run() returned cleanly
+                    break;
+                }
+                // If run() returns and there's still potentially work (or to handle stop signals),
+                // you might need to reset and run again, or break if shutting down.
+                // For a continuous listener, run() might not return unless stopped or an error occurs.
+                // If ioContext.run() returns because it ran out of work, and we are still 'running_',
+                // we should probably restart it if the intent is to keep listening.
+                // However, typically for a server/listener, io_context.run() is expected to block until stop() is called.
+                // If it returns prematurely, ensure io_context is reset if needed before next run() call.
+                // For this pattern, if run() returns, we break, assuming stop() was called elsewhere or an error occurred.
+                break; 
+            } catch (const std::exception& e) {
+                // Handle exceptions from ioContext.run()
+                std::lock_guard<std::mutex> lock(consoleMutex); // Protect std::cerr
+                std::cerr << "[Pipeline] Listener: Exception in ioContext.run(): " << e.what() << std::endl;
+                if (running_.load(std::memory_order_acquire)) {
+                    ioContext.restart(); // Restart Asio io_context to attempt recovery.
+                    std::cerr << "[Pipeline] Listener: ioContext restarted." << std::endl;
+                } else {
+                    break; // Exit loop if shutting down.
+                }
+            }
+        }
+    }
+    catch(const std::exception& e){
+        // Handle exceptions from UdpSocket creation or other setup.
+        std::lock_guard<std::mutex> lock(consoleMutex); // Protect std::cerr
+        std::cerr << "[Pipeline] Listener: Setup exception: " << e.what() << std::endl;
+    }
+
+    // Ensure ioContext is stopped when the listener is done or an error occurs.
+    if (!ioContext.stopped()) {
+        ioContext.stop();
+    }
+    std::lock_guard<std::mutex> lock(consoleMutex);
+    std::cerr << "[Pipeline] Ouster LiDAR listener stopped." << std::endl;
+}
+
+// -----------------------------------------------------------------------------
+
+void Pipeline::runOusterLidarListenerLegacy(boost::asio::io_context& ioContext,
+                                      const std::string& host,
+                                      uint16_t port,
+                                      uint32_t bufferSize,
+                                      const std::vector<int>& allowedCores) {
+    
+    setThreadAffinity(allowedCores); // Sets affinity for this listener thread
+
+    if (host.empty() || port == 0) {
+        std::lock_guard<std::mutex> lock(consoleMutex); // Protect std::cerr
+        std::cerr << "[Pipeline] Listener: Invalid host or port. Host: " << host << ", Port: " << port << std::endl;
+        return;
+    }
+
+    try {
+    UdpSocket listener(ioContext, host, port,
+        // Lambda callback:
+        [&](const std::vector<uint8_t>& packet_data) {
+            LidarDataFrame frame_data_copy; // 1. Local DataFrame created.
+                                       //    It will hold a deep copy of the lidar data.
+
+            // 2. lidarCallback processes the packet.
+            //    Inside decode_packet_single_return, frame_data_copy is assigned
+            //    (via DataFrame::operator=) the contents of lidarCallback's completed buffer.
+            //    This results in a deep copy into frame_data_copy.
+            lidarCallback.decode_packet_legacy(packet_data, frame_data_copy);
 
             // 3. Now frame_data_copy is an independent, deep copy of the relevant frame.
             //    We can safely use it and then move it into the queue.
