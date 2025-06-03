@@ -1,15 +1,32 @@
 #include <fstream>
 #include <stdexcept>
 #include <cmath>
-#include <cstring>
-#include <iostream>
+#include <cstring> // For std::memcpy
+#include <iostream> // For std::cerr
+#include <algorithm> // For std::max
 
-#include <OusterLidarCallback.hpp>
+#include "OusterLidarCallback.hpp" // Use quotes for local headers
 
-#include <cstring>
 #ifdef __AVX2__
-    #include <immintrin.h>
+#include <immintrin.h>
 #endif
+
+// Endian conversion (ensure these are available, e.g. via <endian.h> on Linux/glibc, or provide fallback)
+// For cross-platform, you might need custom implementations or a library.
+// Assuming htobe16, htole16, etc. are available or defined elsewhere.
+// For this example, we'll assume standard Linux/glibc style. If not, this part needs attention.
+#if __BYTE_ORDER == __LITTLE_ENDIAN
+#define le16toh(x) (x)
+#define le32toh(x) (x)
+#define le64toh(x) (x)
+#else
+#include <endian.h> // For leXXtoh functions if on a big-endian system with glibc
+// Or define manually:
+// static inline uint16_t le16toh_manual(uint16_t le_val) {
+//     return (le_val >> 8) | (le_val << 8);
+// } // etc. for 32 and 64
+#endif
+
 
 using json = nlohmann::json;
 
@@ -33,51 +50,58 @@ OusterLidarCallback::OusterLidarCallback(const json& json_data) {
     initialize();
 }
 
-void OusterLidarCallback::parse_metadata(const json& json_data) {
-    if (!json_data.is_object()) {
+void OusterLidarCallback::parse_metadata(const json& json_data_param) {
+    if (!json_data_param.is_object()) {
         throw std::runtime_error("JSON data must be an object");
     }
-    json data = json_data;
+    // Store the provided JSON data; subsequent accesses use the metadata_ member.
+    metadata_ = json_data_param;
 
     try {
-        if (!data.contains("lidar_data_format") || !data["lidar_data_format"].is_object()) {
+        if (!metadata_.contains("lidar_data_format") || !metadata_["lidar_data_format"].is_object()) {
             throw std::runtime_error("Missing or invalid 'lidar_data_format' object");
         }
-        if (!data.contains("config_params") || !data["config_params"].is_object()) {
+        if (!metadata_.contains("config_params") || !metadata_["config_params"].is_object()) {
             throw std::runtime_error("Missing or invalid 'config_params' object");
         }
-        if (!data.contains("beam_intrinsics") || !data["beam_intrinsics"].is_object()) {
+        if (!metadata_.contains("beam_intrinsics") || !metadata_["beam_intrinsics"].is_object()) {
             throw std::runtime_error("Missing or invalid 'beam_intrinsics' object");
         }
+        if (!metadata_.contains("lidar_intrinsics") || !metadata_["lidar_intrinsics"].is_object() ||
+            !metadata_["lidar_intrinsics"].contains("lidar_to_sensor_transform")) {
+             throw std::runtime_error("Missing or invalid 'lidar_intrinsics.lidar_to_sensor_transform'");
+        }
 
-        columns_per_frame_ = data["lidar_data_format"]["columns_per_frame"].get<int>();
-        pixels_per_column_ = data["lidar_data_format"]["pixels_per_column"].get<int>();
-        columns_per_packet_ = data["config_params"]["columns_per_packet"].get<int>();
-        signal_multiplier_ = data["config_params"]["signal_multiplier"].get<double>();
 
-        const auto& beam_intrinsics = data["beam_intrinsics"];
+        columns_per_frame_ = metadata_["lidar_data_format"]["columns_per_frame"].get<int>();
+        pixels_per_column_ = metadata_["lidar_data_format"]["pixels_per_column"].get<int>();
+        columns_per_packet_ = metadata_["config_params"]["columns_per_packet"].get<int>();
+        // signal_multiplier_ = metadata_["config_params"]["signal_multiplier"].get<double>(); // Unused in provided code
+
+        const auto& beam_intrinsics = metadata_["beam_intrinsics"];
         lidar_origin_to_beam_origin_mm_ = beam_intrinsics["lidar_origin_to_beam_origin_mm"].get<double>();
 
-        const auto& pixel_shift_by_row = data["lidar_data_format"]["pixel_shift_by_row"];
-        if (!pixel_shift_by_row.is_array() || pixel_shift_by_row.size() != pixels_per_column_) {
+        const auto& pixel_shift_by_row = metadata_["lidar_data_format"]["pixel_shift_by_row"];
+        if (!pixel_shift_by_row.is_array() || pixel_shift_by_row.size() != static_cast<size_t>(pixels_per_column_)) {
             throw std::runtime_error("'pixel_shift_by_row' must be an array of " + std::to_string(pixels_per_column_) + " elements");
         }
         pixel_shifts_.resize(pixels_per_column_);
-        for (size_t i = 0; i < pixels_per_column_; ++i) {
+        for (int i = 0; i < pixels_per_column_; ++i) {
             pixel_shifts_[i] = pixel_shift_by_row[i].get<int>();
         }
 
-        const auto& lidar_transform = data["lidar_intrinsics"]["lidar_to_sensor_transform"];
-        if (!lidar_transform.is_array() || lidar_transform.size() != 16) {
+        const auto& lidar_transform_json = metadata_["lidar_intrinsics"]["lidar_to_sensor_transform"];
+        if (!lidar_transform_json.is_array() || lidar_transform_json.size() != 16) {
             throw std::runtime_error("'lidar_to_sensor_transform' must be an array of 16 elements");
         }
+        
+        Eigen::Matrix4d raw_transform = Eigen::Matrix4d::Identity(); // Not strictly needed if lidar_to_sensor_transform_ is filled directly
         lidar_to_sensor_transform_ = Eigen::Matrix4d::Identity();
-        Eigen::Matrix4d raw_transform = Eigen::Matrix4d::Identity();
         for (int i = 0; i < 4; ++i) {
             for (int j = 0; j < 4; ++j) {
-                double value = lidar_transform[i * 4 + j].get<double>();
-                raw_transform(i, j) = value;
-                // Scale translation components (last column) from mm to m
+                double value = lidar_transform_json[i * 4 + j].get<double>();
+                // raw_transform(i, j) = value; // if needed for other purposes
+                // Scale translation components (last column, rows 0-2) from mm to m
                 if (j == 3 && i < 3) {
                     lidar_to_sensor_transform_(i, j) = value * 0.001;
                 } else {
@@ -85,15 +109,52 @@ void OusterLidarCallback::parse_metadata(const json& json_data) {
                 }
             }
         }
-    } catch (const json::exception& e) {throw std::runtime_error("JSON parsing error: " + std::string(e.what()));}
-    metadata_ = data;
+    } catch (const json::exception& e) {
+        throw std::runtime_error("JSON parsing error in metadata: " + std::string(e.what()));
+    }
 }
 
 void OusterLidarCallback::initialize() {
-    const auto& beam_intrinsics = metadata_["beam_intrinsics"];
-    const auto& azimuth_angles = beam_intrinsics["beam_azimuth_angles"];
-    const auto& altitude_angles = beam_intrinsics["beam_altitude_angles"];
+    // Determine packet structure based on udp_profile_lidar from metadata
+    const size_t CHANNEL_STRIDE_BYTES = 12; // Stride for accessing each channel(pixel)'s data block (range, signal, etc.)
+    size_t COLUMN_HEADER_BYTES = 12; // Default for single return
+    size_t STATUS_BYTES = 0; // Only used in legacy format
 
+    if (metadata_.contains("udp_profile_lidar") && metadata_["udp_profile_lidar"].is_string()) {
+        std::string udp_profile_lidar = metadata_["udp_profile_lidar"].get<std::string>();
+        if (udp_profile_lidar == "RNG19_RFL8_SIG16_NIR16") {
+            COLUMN_HEADER_BYTES = 12;
+            header_size_ = 32; // Single return has 32-byte packet header
+            footer_size_ = 32; // Single return has 32-byte packet footer
+        } else if (udp_profile_lidar == "LEGACY") {
+            COLUMN_HEADER_BYTES = 16;
+            STATUS_BYTES = 4; // Legacy format includes 4-byte status per measurement block
+            header_size_ = 0; // Legacy has no packet header
+            footer_size_ = 0; // Legacy has no packet footer
+        } else {
+            throw std::runtime_error("Unsupported udp_profile_lidar: " + udp_profile_lidar);
+        }
+    } else {
+        // Fallback to default single return format if udp_profile_lidar is missing
+        std::cerr << "Warning: udp_profile_lidar not found in metadata, defaulting to RNG19_RFL8_SIG16_NIR16" << std::endl;
+        header_size_ = 32;
+        footer_size_ = 32;
+    }
+
+    // Calculate block_size and expected_size
+    block_size_ = COLUMN_HEADER_BYTES + (pixels_per_column_ * CHANNEL_STRIDE_BYTES) + STATUS_BYTES;
+    expected_size_ = header_size_ + (columns_per_packet_ * block_size_) + footer_size_;
+
+    const auto& beam_intrinsics = metadata_["beam_intrinsics"];
+    const auto& azimuth_angles_json = beam_intrinsics["beam_azimuth_angles"];
+    const auto& altitude_angles_json = beam_intrinsics["beam_altitude_angles"];
+
+    if (!azimuth_angles_json.is_array() || azimuth_angles_json.size() != static_cast<size_t>(pixels_per_column_) ||
+        !altitude_angles_json.is_array() || altitude_angles_json.size() != static_cast<size_t>(pixels_per_column_)) {
+        throw std::runtime_error("Beam azimuth/altitude angles missing or wrong size in JSON.");
+    }
+
+    // Reserve buffer space
     data_buffer1_.reserve(columns_per_frame_ * pixels_per_column_);
     data_buffer2_.reserve(columns_per_frame_ * pixels_per_column_);
 
@@ -104,271 +165,628 @@ void OusterLidarCallback::initialize() {
     r_min_.resize(pixels_per_column_, 0.1);
 
     // Initialize transposed lookup tables: [m_id][c_id]
-    x_1_.clear();
-    y_1_.clear();
-    z_1_.clear();
-    x_1_.reserve(columns_per_frame_);
-    y_1_.reserve(columns_per_frame_);
-    z_1_.reserve(columns_per_frame_);
-    for (size_t m_id = 0; m_id < columns_per_frame_; ++m_id) {
-        std::vector<double, Eigen::aligned_allocator<double>> x_inner(pixels_per_column_);
-        std::vector<double, Eigen::aligned_allocator<double>> y_inner(pixels_per_column_);
-        std::vector<double, Eigen::aligned_allocator<double>> z_inner(pixels_per_column_);
-        x_1_.push_back(std::move(x_inner));
-        y_1_.push_back(std::move(y_inner));
-        z_1_.push_back(std::move(z_inner));
-    }
-
+    x_1_.assign(columns_per_frame_, std::vector<double, Eigen::aligned_allocator<double>>(pixels_per_column_));
+    y_1_.assign(columns_per_frame_, std::vector<double, Eigen::aligned_allocator<double>>(pixels_per_column_));
+    z_1_.assign(columns_per_frame_, std::vector<double, Eigen::aligned_allocator<double>>(pixels_per_column_));
+    
     x_2_.resize(columns_per_frame_);
     y_2_.resize(columns_per_frame_);
     z_2_.resize(columns_per_frame_);
 
-    // Transformation matrix: sensor (x=back, y=right, z=up) to desired (x=front, y=right, z=down)
-    Eigen::Matrix4d transform = Eigen::Matrix4d::Identity();
-    transform(0, 0) = -1.0; // x' = -x (flip x-back to x-front)
-    transform(1, 1) = 1.0;  // y' = y (keep y-right)
-    transform(2, 2) = -1.0; // z' = -z (flip z-up to z-down)
+    // Transformation matrix: sensor (Ouster default: x=forward, y=left, z=up) to desired ROS-like (x=front, y=right, z=down)
+    Eigen::Matrix4d sensor_to_desired_transform = Eigen::Matrix4d::Identity();
+    sensor_to_desired_transform(0, 0) = -1.0;
+    sensor_to_desired_transform(1, 1) = 1.0;
+    sensor_to_desired_transform(2, 2) = -1.0;
 
-    for (size_t i = 0; i < pixels_per_column_; ++i) {
-        double az = azimuth_angles[i].get<double>() * M_PI / 180.0;
-        double alt = altitude_angles[i].get<double>() * M_PI / 180.0;
-        sin_beam_azimuths_[i] = std::sin(az);
-        cos_beam_azimuths_[i] = std::cos(az);
-        sin_beam_altitudes_[i] = std::sin(alt);
-        cos_beam_altitudes_[i] = std::cos(alt);
+    for (int i = 0; i < pixels_per_column_; ++i) {
+        double az_deg = azimuth_angles_json[i].get<double>();
+        double alt_deg = altitude_angles_json[i].get<double>();
+        double az_rad = az_deg * M_PI / 180.0;
+        double alt_rad = alt_deg * M_PI / 180.0;
+        sin_beam_azimuths_[i] = std::sin(az_rad);
+        cos_beam_azimuths_[i] = std::cos(az_rad);
+        sin_beam_altitudes_[i] = std::sin(alt_rad);
+        cos_beam_altitudes_[i] = std::cos(alt_rad);
     }
 
-    for (size_t m_id = 0; m_id < columns_per_frame_; ++m_id) {
-        double azimuth_rad = m_id * 2.0 * M_PI / columns_per_frame_;
-        double cos_az = std::cos(azimuth_rad);
-        double sin_az = std::sin(azimuth_rad);
-        Eigen::Vector4d offset(lidar_origin_to_beam_origin_mm_ * 0.001 * cos_az,
-                               lidar_origin_to_beam_origin_mm_ * 0.001 * sin_az,
-                               0.0, 1.0);
-        // Apply lidar_to_sensor_transform_ first, then sensor-to-desired transform
-        offset = lidar_to_sensor_transform_ * offset;
-        offset = transform * offset;
-        x_2_[m_id] = offset.x();
-        y_2_[m_id] = offset.y();
-        z_2_[m_id] = offset.z();
+    for (int m_id = 0; m_id < columns_per_frame_; ++m_id) {
+        double measurement_azimuth_rad = m_id * 2.0 * M_PI / columns_per_frame_;
+        double cos_meas_az = std::cos(measurement_azimuth_rad);
+        double sin_meas_az = std::sin(measurement_azimuth_rad);
 
-        for (size_t ch = 0; ch < pixels_per_column_; ++ch) {
-            double total_az = azimuth_rad + azimuth_angles[ch].get<double>() * M_PI / 180.0;
-            double cos_total_az = std::cos(total_az);
-            double sin_total_az = std::sin(total_az);
+        Eigen::Vector4d offset_lidar_frame(
+            lidar_origin_to_beam_origin_mm_ * 0.001 * cos_meas_az,
+            lidar_origin_to_beam_origin_mm_ * 0.001 * sin_meas_az,
+            0.0,
+            1.0);
+
+        Eigen::Vector4d offset_transformed = sensor_to_desired_transform * lidar_to_sensor_transform_ * offset_lidar_frame;
+        x_2_[m_id] = offset_transformed.x();
+        y_2_[m_id] = offset_transformed.y();
+        z_2_[m_id] = offset_transformed.z();
+
+        for (int ch = 0; ch < pixels_per_column_; ++ch) {
+            double beam_az_rad = azimuth_angles_json[ch].get<double>() * M_PI / 180.0;
+            double total_az_rad = measurement_azimuth_rad + beam_az_rad;
+            
+            double cos_total_az = std::cos(total_az_rad);
+            double sin_total_az = std::sin(total_az_rad);
+            
             double cos_alt = cos_beam_altitudes_[ch];
             double sin_alt = sin_beam_altitudes_[ch];
-            Eigen::Vector4d dir(cos_alt * cos_total_az, cos_alt * sin_total_az, sin_alt, 1.0);
-            // Apply lidar_to_sensor_transform_ first, then sensor-to-desired transform
-            dir = lidar_to_sensor_transform_ * dir;
-            dir = transform * dir;
-            x_1_[m_id][ch] = dir.x();
-            y_1_[m_id][ch] = dir.y();
-            z_1_[m_id][ch] = dir.z();
+
+            Eigen::Vector4d dir_lidar_frame(
+                cos_alt * cos_total_az,
+                cos_alt * sin_total_az,
+                sin_alt,
+                0.0);
+
+            Eigen::Vector4d dir_transformed = sensor_to_desired_transform * lidar_to_sensor_transform_ * dir_lidar_frame;
+            x_1_[m_id][ch] = dir_transformed.x();
+            y_1_[m_id][ch] = dir_transformed.y();
+            z_1_[m_id][ch] = dir_transformed.z();
         }
     }
 
-    if (x_1_.size() != columns_per_frame_ || x_1_[0].size() != pixels_per_column_) {
-        throw std::runtime_error("x_1_ lookup table size mismatch");
+    // Sanity checks for lookup table sizes
+    if (x_1_.size() != static_cast<size_t>(columns_per_frame_) || (!x_1_.empty() && x_1_[0].size() != static_cast<size_t>(pixels_per_column_))) {
+        throw std::runtime_error("x_1_ lookup table size mismatch after initialization");
     }
-    if (x_2_.size() != columns_per_frame_) {
-        throw std::runtime_error("x_2_ lookup table size mismatch");
+    if (x_2_.size() != static_cast<size_t>(columns_per_frame_)) {
+        throw std::runtime_error("x_2_ lookup table size mismatch after initialization");
     }
-    if (pixel_shifts_.size() != pixels_per_column_) {
-        throw std::runtime_error("pixel_shifts_ size mismatch");
+    if (pixel_shifts_.size() != static_cast<size_t>(pixels_per_column_)) {
+        throw std::runtime_error("pixel_shifts_ size mismatch after initialization");
     }
 
 #ifdef DEBUG
-    assert(reinterpret_cast<uintptr_t>(x_1_[0].data()) % 32 == 0);
+    if (!x_1_.empty() && !x_1_[0].empty()) {
+        assert(reinterpret_cast<uintptr_t>(x_1_[0].data()) % 32 == 0 && "x_1_[0].data() not 32-byte aligned!");
+    }
 #endif
 }
 
-void OusterLidarCallback::decode_packet_single_return(const std::vector<uint8_t>& packet, DataFrame& frame) {
+void OusterLidarCallback::decode_packet_single_return(const std::vector<uint8_t>& packet, LidarDataFrame& frame) {
     if (packet.size() != expected_size_) {
         std::cerr << "Invalid packet size: " << packet.size() << ", expected: " << expected_size_ << std::endl;
         return;
     }
 
-    uint16_t packet_type;
-    std::memcpy(&packet_type, packet.data(), sizeof(uint16_t));
-    packet_type = le16toh(packet_type);
-    if (packet_type != 0x1) {
-        std::cerr << "Invalid packet type: " << packet_type << " (expected 0x1)" << std::endl;
+    uint16_t packet_type_raw;
+    std::memcpy(&packet_type_raw, packet.data(), sizeof(uint16_t));
+    uint16_t packet_type = le16toh(packet_type_raw);
+    if (packet_type != 0x0001) { // Check against Ouster's Lidar Packet type (0x0001 for OS-series)
+        std::cerr << "Invalid packet type: 0x" << std::hex << packet_type << std::dec << " (expected 0x1)" << std::endl;
         return;
     }
 
-    uint16_t packet_frame_id;
-    std::memcpy(&packet_frame_id, packet.data() + 2, sizeof(uint16_t));
-    packet_frame_id = le16toh(packet_frame_id);
+    uint16_t current_packet_frame_id_raw;
+    std::memcpy(&current_packet_frame_id_raw, packet.data() + 2, sizeof(uint16_t)); // frame_id is at offset 2
+    uint16_t current_packet_frame_id = le16toh(current_packet_frame_id_raw);
 
-    double prevframe_latest_timestamp_s = 0.0;
-    if (packet_frame_id != frame_id_) {
-        // std::cerr << "frame_id_: " << frame_id_ << std::endl;
-        // std::cerr << "numberpoints: " << number_points_ << std::endl;
-        // std::cerr << "interframe_timedelta: " << interframe_timedelta << std::endl;
-        // std::cerr << "timestamp: " << timestamp << std::endl;
-        swap_buffers();
-        number_points_ = 0;
-        frame_id_ = packet_frame_id;
-        prevframe_latest_timestamp_s = latest_timestamp_s;
-        DataFrame& write_buffer = buffer_toggle_ ? data_buffer2_ : data_buffer1_;
-        write_buffer.clear();
-        write_buffer.reserve(columns_per_frame_ * pixels_per_column_);
+    LidarDataFrame* p_current_write_buffer;
+    if (buffer_toggle_) { // true: data_buffer1_ is read, data_buffer2_ is write
+        p_current_write_buffer = &data_buffer2_;
+    } else { // false: data_buffer2_ is read, data_buffer1_ is write
+        p_current_write_buffer = &data_buffer1_;
     }
 
-    DataFrame& write_buffer = buffer_toggle_ ? data_buffer2_ : data_buffer1_;
-    bool is_first_point = (number_points_ == 0); // Track if this is the first point of the frame
+    double prev_frame_completed_latest_ts = 0.0;
+
+    if (current_packet_frame_id != this->frame_id_) {
+        // Frame transition detected. The frame in p_current_write_buffer is now complete.
+        if (this->frame_id_ != 0 || this->number_points_ > 0) { // Avoid operations for uninitialized/empty first "previous" frame
+            p_current_write_buffer->numberpoints = this->number_points_; // p_current_write_buffer->timestamp and ->frame_id were set by the first point of that frame.
+        }
+        
+        prev_frame_completed_latest_ts = this->latest_timestamp_s; // Timestamp of the last point of the frame that just completed.
+
+        swap_buffers(); // Flips buffer_toggle_. Roles of data_buffer1_ and data_buffer2_ are swapped.
+
+        // Update p_current_write_buffer to point to the NEW write buffer.
+        if (buffer_toggle_) {
+            p_current_write_buffer = &data_buffer2_;
+        } else {
+            p_current_write_buffer = &data_buffer1_;
+        }
+
+        this->number_points_ = 0; // Reset point count for the new frame.
+        this->frame_id_ = current_packet_frame_id; // Update the class's current frame_id tracker.
+
+        p_current_write_buffer->clear();
+        p_current_write_buffer->reserve(columns_per_frame_ * pixels_per_column_);
+    }
+
+    bool is_first_point_of_current_frame = (this->number_points_ == 0);
 
     for (int col = 0; col < columns_per_packet_; ++col) {
-        size_t block_offset = header_size_ + col * block_size_;
+        size_t block_offset = header_size_ + col * block_size_; // header_size_ is offset to first block from packet start
 
-        uint64_t timestamp_ns;
-        std::memcpy(&timestamp_ns, packet.data() + block_offset, sizeof(uint64_t));
-        timestamp_ns = le64toh(timestamp_ns);
-        double timestamp_s = timestamp_ns * 1e-9;
-        if (timestamp_s < 0) {
-            std::cerr << "Negative timestamp: " << timestamp_s << std::endl;
+        uint64_t timestamp_ns_raw;
+        std::memcpy(&timestamp_ns_raw, packet.data() + block_offset, sizeof(uint64_t));
+        uint64_t timestamp_ns = le64toh(timestamp_ns_raw);
+        double current_col_timestamp_s = static_cast<double>(timestamp_ns) * 1e-9;
+        
+        if (current_col_timestamp_s < 0) {
+            std::cerr << "Negative column timestamp: " << current_col_timestamp_s << std::endl;
             continue;
         }
-        latest_timestamp_s = timestamp_s;
+        this->latest_timestamp_s = current_col_timestamp_s; // Update class member with latest processed timestamp
 
-        uint16_t m_id;
-        std::memcpy(&m_id, packet.data() + block_offset + 8, sizeof(uint16_t));
-        m_id = le16toh(m_id);
-        if (m_id >= columns_per_frame_) {
-            std::cerr << "Invalid measurement ID: " << m_id << std::endl;
+        uint16_t m_id_raw;
+        std::memcpy(&m_id_raw, packet.data() + block_offset + 8, sizeof(uint16_t)); // Measurement ID is at offset 8 in column block
+        uint16_t m_id = le16toh(m_id_raw);
+
+        if (m_id >= static_cast<uint16_t>(columns_per_frame_)) {
+            std::cerr << "Invalid measurement ID: " << m_id << " (>= " << columns_per_frame_ << ")" << std::endl;
             continue;
         }
 
-        if (!(packet[block_offset + 10] & 0x01)) {
+        // Column status is at offset 10 in column block. Bit 0 indicates valid data.
+        uint8_t column_status;
+        std::memcpy(&column_status, packet.data() + block_offset + 10, sizeof(uint8_t));
+        if (!(column_status & 0x01)) { // Check if measurement block is valid
             continue;
         }
 
 #ifdef __AVX2__
-        // AVX2 implementation
-        for (uint16_t c_id = 0; c_id < pixels_per_column_; c_id += 4) {
-            size_t pixel_offset = block_offset + 12 + c_id * 12;
+        for (uint16_t c_id_base = 0; c_id_base < static_cast<uint16_t>(pixels_per_column_); c_id_base += 4) {
+            // Offset to first pixel data in column block is 12 bytes (ts 8B, m_id 2B, status 1B, encoder 2B -> total 12B before pixels)
+            size_t first_pixel_in_block_offset = block_offset + 12; 
+            size_t pixel_group_offset = first_pixel_in_block_offset + c_id_base * 12; // 12 bytes per pixel data
 
             alignas(32) double range_m[4];
             alignas(32) double r_min_vals[4];
-            uint16_t c_ids[4], reflectivity[4], signal[4], nir[4];
-            for (int i = 0; i < 4 && c_id + i < pixels_per_column_; ++i) {
-                size_t offset = pixel_offset + i * 12;
-                if (offset + 11 >= packet.size()) {
-                    range_m[i] = 0.0;
+            uint16_t c_ids[4];
+            uint8_t reflectivity[4]; // Reflectivity is uint8_t
+            uint16_t signal[4], nir[4];
+
+            for (int i = 0; i < 4; ++i) {
+                uint16_t current_c_id = c_id_base + i;
+                if (current_c_id >= static_cast<uint16_t>(pixels_per_column_)) {
+                    range_m[i] = 0.0; // Mark as invalid if past actual pixels_per_column
+                    r_min_vals[i] = 1.0; // Ensure it fails range_m < r_min_vals if range_m is 0
                     continue;
                 }
-                uint32_t range_mm;
-                uint8_t range_bytes[4] = {packet[offset], packet[offset + 1], packet[offset + 2], 0};
-                std::memcpy(&range_mm, range_bytes, 4);
-                range_mm = le32toh(range_mm) & 0x0007FFFF;
-                range_m[i] = range_mm * 0.001;
-                r_min_vals[i] = r_min_[c_id + i];
-                c_ids[i] = c_id + i;
-                reflectivity[i] = packet[offset + 4];
-                std::memcpy(&signal[i], packet.data() + offset + 6, sizeof(uint16_t));
-                std::memcpy(&nir[i], packet.data() + offset + 8, sizeof(uint16_t));
-                signal[i] = le16toh(signal[i]);
-                nir[i] = le16toh(nir[i]);
+                
+                size_t pixel_data_offset = first_pixel_in_block_offset + current_c_id * 12;
+                if (pixel_data_offset + 11 >= packet.size()) { // Check bounds for reading up to 12 bytes
+                    range_m[i] = 0.0; r_min_vals[i] = 1.0; continue;
+                }
+
+                uint32_t range_mm_raw;
+                // Ouster range is 3 bytes, then 1 byte reflectivity. Read 3 bytes into lower part of uint32_t.
+                uint8_t range_bytes[4] = {packet[pixel_data_offset], packet[pixel_data_offset + 1], packet[pixel_data_offset + 2], 0};
+                std::memcpy(&range_mm_raw, range_bytes, sizeof(uint32_t));
+                uint32_t range_mm = le32toh(range_mm_raw) & 0x0007FFFF; // Ouster new format range is 19 bits for REV06+
+                                                                      // User mentioned "not legacy format", older non-legacy could be 0x0007FFFF (19 bits)
+                range_m[i] = static_cast<double>(range_mm) * 0.001; // mm to m
+                r_min_vals[i] = r_min_[current_c_id];
+                c_ids[i] = current_c_id;
+
+                std::memcpy(&reflectivity[i], packet.data() + pixel_data_offset + 4, sizeof(uint8_t)); // Reflectivity (1B)
+                uint16_t signal_raw, nir_raw;
+                std::memcpy(&signal_raw, packet.data() + pixel_data_offset + 6, sizeof(uint16_t)); // Signal (2B)
+                std::memcpy(&nir_raw, packet.data() + pixel_data_offset + 8, sizeof(uint16_t));   // NIR (2B)
+                signal[i] = le16toh(signal_raw);
+                nir[i] = le16toh(nir_raw);
             }
 
-            __m256d range = _mm256_load_pd(range_m);
-            __m256d r_min_vec = _mm256_load_pd(r_min_vals);
-            __m256d valid_mask = _mm256_cmp_pd(range, r_min_vec, _CMP_GE_OQ);
+            __m256d m256d_range = _mm256_load_pd(range_m);
+            __m256d m256d_r_min_vec = _mm256_load_pd(r_min_vals);
+            // Valid points are those where range_m >= r_min_val
+            __m256d valid_mask = _mm256_cmp_pd(m256d_range, m256d_r_min_vec, _CMP_GE_OQ);
 
-            __m256d x1 = _mm256_load_pd(x_1_[m_id].data() + c_id);
-            __m256d y1 = _mm256_load_pd(y_1_[m_id].data() + c_id);
-            __m256d z1 = _mm256_load_pd(z_1_[m_id].data() + c_id);
-            __m256d x2 = _mm256_set1_pd(x_2_[m_id]);
-            __m256d y2 = _mm256_set1_pd(y_2_[m_id]);
-            __m256d z2 = _mm256_set1_pd(z_2_[m_id]);
+            __m256d x1_vec = _mm256_load_pd(x_1_[m_id].data() + c_id_base);
+            __m256d y1_vec = _mm256_load_pd(y_1_[m_id].data() + c_id_base);
+            __m256d z1_vec = _mm256_load_pd(z_1_[m_id].data() + c_id_base);
+            __m256d x2_val = _mm256_set1_pd(x_2_[m_id]);
+            __m256d y2_val = _mm256_set1_pd(y_2_[m_id]);
+            __m256d z2_val = _mm256_set1_pd(z_2_[m_id]);
 
-            __m256d pt_x = _mm256_fmadd_pd(range, x1, x2);
-            __m256d pt_y = _mm256_fmadd_pd(range, y1, y2);
-            __m256d pt_z = _mm256_fmadd_pd(range, z1, z2);
+            __m256d pt_x = _mm256_fmadd_pd(m256d_range, x1_vec, x2_val);
+            __m256d pt_y = _mm256_fmadd_pd(m256d_range, y1_vec, y2_val);
+            __m256d pt_z = _mm256_fmadd_pd(m256d_range, z1_vec, z2_val);
+
+            alignas(32) double pt_x_arr[4], pt_y_arr[4], pt_z_arr[4];
+            _mm256_store_pd(pt_x_arr, pt_x);
+            _mm256_store_pd(pt_y_arr, pt_y);
+            _mm256_store_pd(pt_z_arr, pt_z);
+            
+            alignas(32) double valid_mask_arr[4]; // Store mask to check elements
+            _mm256_store_pd(valid_mask_arr, valid_mask);
+
+            double relative_timestamp_s = (p_current_write_buffer->numberpoints > 0 || this->number_points_ > 0) && p_current_write_buffer->timestamp > 0
+                ? std::max(0.0, current_col_timestamp_s - p_current_write_buffer->timestamp)
+                : 0.0;
+
+            for (int i = 0; i < 4; ++i) {
+                uint16_t current_c_id = c_id_base + i;
+                 if (current_c_id >= static_cast<uint16_t>(pixels_per_column_)) break; // Processed all valid pixels for this group
+
+                // Check if the point is valid based on the AVX comparison (mask will be all 1s (NaN) for true, 0 for false)
+                // and also the original range check (in case AVX was skipped due to boundary conditions)
+                if (range_m[i] >= r_min_vals[i] && range_m[i] > 0) { // Double check scalar condition
+                    p_current_write_buffer->x.push_back(pt_x_arr[i]);
+                    p_current_write_buffer->y.push_back(pt_y_arr[i]);
+                    p_current_write_buffer->z.push_back(pt_z_arr[i]);
+                    p_current_write_buffer->c_id.push_back(c_ids[i]);
+                    p_current_write_buffer->m_id.push_back(m_id);
+                    p_current_write_buffer->timestamp_points.push_back(current_col_timestamp_s);
+                    p_current_write_buffer->relative_timestamp.push_back(relative_timestamp_s);
+                    p_current_write_buffer->reflectivity.push_back(reflectivity[i]);
+                    p_current_write_buffer->signal.push_back(signal[i]);
+                    p_current_write_buffer->nir.push_back(nir[i]);
+                    
+                    this->number_points_++;
+                    if (is_first_point_of_current_frame) {
+                        p_current_write_buffer->timestamp = current_col_timestamp_s;
+                        p_current_write_buffer->frame_id = this->frame_id_;
+                        p_current_write_buffer->interframe_timedelta = (prev_frame_completed_latest_ts > 0.0)
+                            ? std::max(0.0, current_col_timestamp_s - prev_frame_completed_latest_ts) : 0.0;
+                        is_first_point_of_current_frame = false;
+                    }
+                }
+            }
+        }
+#else // Scalar fallback
+        size_t first_pixel_in_block_offset = block_offset + 12;
+        for (uint16_t c_id = 0; c_id < static_cast<uint16_t>(pixels_per_column_); ++c_id) {
+            size_t pixel_data_offset = first_pixel_in_block_offset + c_id * 12;
+            if (pixel_data_offset + 11 >= packet.size()) { // Check bounds for reading up to 12 bytes
+                // std::cerr << "Pixel offset out of bounds\n"; // Can be noisy
+                continue;
+            }
+
+            uint32_t range_mm_raw;
+            uint8_t range_bytes[4] = {packet[pixel_data_offset], packet[pixel_data_offset + 1], packet[pixel_data_offset + 2], 0};
+            std::memcpy(&range_mm_raw, range_bytes, sizeof(uint32_t));
+            uint32_t range_mm = le32toh(range_mm_raw) & 0x0007FFFF; // 19-bit range
+            double range_m = static_cast<double>(range_mm) * 0.001;
+
+            if (range_m < r_min_[c_id] || range_m == 0) { // Skip if below min range or zero
+                continue;
+            }
+
+            uint8_t current_reflectivity;
+            std::memcpy(&current_reflectivity, packet.data() + pixel_data_offset + 4, sizeof(uint8_t));
+            uint16_t signal_raw, nir_raw;
+            std::memcpy(&signal_raw, packet.data() + pixel_data_offset + 6, sizeof(uint16_t));
+            std::memcpy(&nir_raw, packet.data() + pixel_data_offset + 8, sizeof(uint16_t));
+            uint16_t current_signal = le16toh(signal_raw);
+            uint16_t current_nir = le16toh(nir_raw);
+
+            double pt_x = range_m * x_1_[m_id][c_id] + x_2_[m_id];
+            double pt_y = range_m * y_1_[m_id][c_id] + y_2_[m_id];
+            double pt_z = range_m * z_1_[m_id][c_id] + z_2_[m_id];
+
+            double relative_timestamp_s = (p_current_write_buffer->numberpoints > 0 || this->number_points_ > 0) && p_current_write_buffer->timestamp > 0
+                ? std::max(0.0, current_col_timestamp_s - p_current_write_buffer->timestamp)
+                : 0.0;
+
+            p_current_write_buffer->x.push_back(pt_x);
+            p_current_write_buffer->y.push_back(pt_y);
+            p_current_write_buffer->z.push_back(pt_z);
+            p_current_write_buffer->c_id.push_back(c_id);
+            p_current_write_buffer->m_id.push_back(m_id);
+            p_current_write_buffer->timestamp_points.push_back(current_col_timestamp_s);
+            p_current_write_buffer->relative_timestamp.push_back(relative_timestamp_s);
+            p_current_write_buffer->reflectivity.push_back(current_reflectivity);
+            p_current_write_buffer->signal.push_back(current_signal);
+            p_current_write_buffer->nir.push_back(current_nir);
+            
+            this->number_points_++;
+            if (is_first_point_of_current_frame) {
+                p_current_write_buffer->timestamp = current_col_timestamp_s;
+                p_current_write_buffer->frame_id = this->frame_id_;
+                 p_current_write_buffer->interframe_timedelta = (prev_frame_completed_latest_ts > 0.0)
+                    ? std::max(0.0, current_col_timestamp_s - prev_frame_completed_latest_ts) : 0.0;
+                is_first_point_of_current_frame = false;
+            }
+        }
+#endif
+    } // End of column loop
+
+    // Update number of points for the buffer currently being written to,
+    // reflecting points added from this packet.
+    if (p_current_write_buffer) { // Should always be true here
+         p_current_write_buffer->numberpoints = this->number_points_;
+    }
+    
+    // Assign the current "read" buffer (which holds the last completed frame) to the output parameter.
+    frame = get_latest_lidar_frame();
+}
+
+void OusterLidarCallback::decode_packet_legacy(const std::vector<uint8_t>& packet, LidarDataFrame& frame) {
+    if (packet.size() != expected_size_) {
+        std::cerr << "Invalid packet size: " << packet.size() << ", expected: " << expected_size_ << std::endl;
+        return;
+    }
+
+    LidarDataFrame* p_current_write_buffer;
+    if (buffer_toggle_) {
+        p_current_write_buffer = &data_buffer2_;
+    } else {
+        p_current_write_buffer = &data_buffer1_;
+    }
+
+    double prev_frame_completed_latest_ts = 0.0;
+
+    for (int col = 0; col < columns_per_packet_; ++col) {
+        size_t block_offset = col * block_size_; // header_size_ in legacy format is set to 0
+
+        uint64_t timestamp_ns_raw;
+        std::memcpy(&timestamp_ns_raw, packet.data() + block_offset, sizeof(uint64_t));
+        uint64_t timestamp_ns = le64toh(timestamp_ns_raw);
+        double current_col_timestamp_s = static_cast<double>(timestamp_ns) * 1e-9;
+
+        if (current_col_timestamp_s < 0) {
+            std::cerr << "Negative column timestamp: " << current_col_timestamp_s << std::endl;
+            continue;
+        }
+        this->latest_timestamp_s = current_col_timestamp_s;
+
+        uint16_t m_id_raw;
+        std::memcpy(&m_id_raw, packet.data() + block_offset + 8, sizeof(uint16_t));
+        uint16_t m_id = le16toh(m_id_raw);
+
+        if (m_id >= static_cast<uint16_t>(columns_per_frame_)) {
+            std::cerr << "Invalid measurement ID: " << m_id << " (>= " << columns_per_frame_ << ")" << std::endl;
+            continue;
+        }
+
+        uint16_t current_packet_frame_id_raw;
+        std::memcpy(&current_packet_frame_id_raw, packet.data() + block_offset + 10, sizeof(uint16_t));
+        uint16_t current_packet_frame_id = le16toh(current_packet_frame_id_raw);
+
+        if (current_packet_frame_id != this->frame_id_) {
+            if (this->frame_id_ != 0 || this->number_points_ > 0) {
+                p_current_write_buffer->numberpoints = this->number_points_;
+            }
+
+            prev_frame_completed_latest_ts = this->latest_timestamp_s;
+            swap_buffers();
+
+            if (buffer_toggle_) {
+                p_current_write_buffer = &data_buffer2_;
+            } else {
+                p_current_write_buffer = &data_buffer1_;
+            }
+
+            this->number_points_ = 0;
+            this->frame_id_ = current_packet_frame_id;
+
+            p_current_write_buffer->clear();
+            p_current_write_buffer->reserve(columns_per_frame_ * pixels_per_column_);
+        }
+
+        // Measurement block status is after header (16 bytes) and channel data (pixels_per_column_ * 12 bytes)
+        uint32_t block_status;
+        size_t status_offset = block_offset + 16 + (pixels_per_column_ * 12);
+        std::memcpy(&block_status, packet.data() + status_offset, sizeof(uint32_t));
+        block_status = le32toh(block_status);
+        if (block_status != 0xFFFFFFFF) {
+            continue;
+        }
+
+        bool is_first_point_of_current_frame = (this->number_points_ == 0);
+
+#ifdef __AVX2__
+        for (uint16_t c_id_base = 0; c_id_base < static_cast<uint16_t>(pixels_per_column_); c_id_base += 4) {
+            size_t first_pixel_in_block_offset = block_offset + 16;
+            size_t pixel_group_offset = first_pixel_in_block_offset + c_id_base * 12;
+
+            alignas(32) double range_m[4];
+            alignas(32) double r_min_vals[4];
+            uint16_t c_ids[4];
+            uint8_t reflectivity[4];
+            uint16_t signal[4], nir[4];
+
+            for (int i = 0; i < 4; ++i) {
+                uint16_t current_c_id = c_id_base + i;
+                if (current_c_id >= static_cast<uint16_t>(pixels_per_column_)) {
+                    range_m[i] = 0.0;
+                    r_min_vals[i] = 1.0;
+                    continue;
+                }
+
+                size_t pixel_data_offset = first_pixel_in_block_offset + current_c_id * 12;
+                if (pixel_data_offset + 11 >= packet.size()) {
+                    range_m[i] = 0.0;
+                    r_min_vals[i] = 1.0;
+                    continue;
+                }
+
+                uint32_t range_mm_raw;
+                std::memcpy(&range_mm_raw, packet.data() + pixel_data_offset, sizeof(uint32_t));
+                uint32_t range_mm = le32toh(range_mm_raw) & 0x000FFFFF; // 20-bit range
+                range_m[i] = static_cast<double>(range_mm) * 0.001;
+                r_min_vals[i] = r_min_[current_c_id];
+                c_ids[i] = current_c_id;
+
+                std::memcpy(&reflectivity[i], packet.data() + pixel_data_offset + 4, sizeof(uint8_t));
+                uint16_t signal_raw, nir_raw;
+                std::memcpy(&signal_raw, packet.data() + pixel_data_offset + 6, sizeof(uint16_t));
+                std::memcpy(&nir_raw, packet.data() + pixel_data_offset + 8, sizeof(uint16_t));
+                signal[i] = le16toh(signal_raw);
+                nir[i] = le16toh(nir_raw);
+            }
+
+            __m256d m256d_range = _mm256_load_pd(range_m);
+            __m256d m256d_r_min_vec = _mm256_load_pd(r_min_vals);
+            __m256d valid_mask = _mm256_cmp_pd(m256d_range, m256d_r_min_vec, _CMP_GE_OQ);
+
+            __m256d x1_vec = _mm256_load_pd(x_1_[m_id].data() + c_id_base);
+            __m256d y1_vec = _mm256_load_pd(y_1_[m_id].data() + c_id_base);
+            __m256d z1_vec = _mm256_load_pd(z_1_[m_id].data() + c_id_base);
+            __m256d x2_val = _mm256_set1_pd(x_2_[m_id]);
+            __m256d y2_val = _mm256_set1_pd(y_2_[m_id]);
+            __m256d z2_val = _mm256_set1_pd(z_2_[m_id]);
+
+            __m256d pt_x = _mm256_fmadd_pd(m256d_range, x1_vec, x2_val);
+            __m256d pt_y = _mm256_fmadd_pd(m256d_range, y1_vec, y2_val);
+            __m256d pt_z = _mm256_fmadd_pd(m256d_range, z1_vec, z2_val);
 
             alignas(32) double pt_x_arr[4], pt_y_arr[4], pt_z_arr[4];
             _mm256_store_pd(pt_x_arr, pt_x);
             _mm256_store_pd(pt_y_arr, pt_y);
             _mm256_store_pd(pt_z_arr, pt_z);
 
-            double relative_timestamp_s = write_buffer.numberpoints > 0
-                ? std::max(0.0, timestamp_s - write_buffer.timestamp)
+            alignas(32) double valid_mask_arr[4];
+            _mm256_store_pd(valid_mask_arr, valid_mask);
+
+            double relative_timestamp_s = (p_current_write_buffer->numberpoints > 0 || this->number_points_ > 0) && p_current_write_buffer->timestamp > 0
+                ? std::max(0.0, current_col_timestamp_s - p_current_write_buffer->timestamp)
                 : 0.0;
 
-            for (int i = 0; i < 4 && c_id + i < pixels_per_column_; ++i) {
-                if (range_m[i] < r_min_vals[i]) continue;
-                write_buffer.x.push_back(pt_x_arr[i]);
-                write_buffer.y.push_back(pt_y_arr[i]);
-                write_buffer.z.push_back(pt_z_arr[i]);
-                write_buffer.c_id.push_back(c_ids[i]);
-                write_buffer.m_id.push_back(m_id);
-                write_buffer.timestamp_points.push_back(timestamp_s);
-                write_buffer.relative_timestamp.push_back(relative_timestamp_s);
-                write_buffer.reflectivity.push_back(reflectivity[i]);
-                write_buffer.signal.push_back(signal[i]);
-                write_buffer.nir.push_back(nir[i]);
-                ++number_points_;
-                if (is_first_point) {
-                    write_buffer.timestamp = timestamp_s;
-                    write_buffer.frame_id = frame_id_;
-                    write_buffer.interframe_timedelta = timestamp_s - prevframe_latest_timestamp_s;
-                    is_first_point = false;
+            for (int i = 0; i < 4; ++i) {
+                uint16_t current_c_id = c_id_base + i;
+                if (current_c_id >= static_cast<uint16_t>(pixels_per_column_)) break;
+
+                if (range_m[i] >= r_min_vals[i] && range_m[i] > 0) {
+                    p_current_write_buffer->x.push_back(pt_x_arr[i]);
+                    p_current_write_buffer->y.push_back(pt_y_arr[i]);
+                    p_current_write_buffer->z.push_back(pt_z_arr[i]);
+                    p_current_write_buffer->c_id.push_back(c_ids[i]);
+                    p_current_write_buffer->m_id.push_back(m_id);
+                    p_current_write_buffer->timestamp_points.push_back(current_col_timestamp_s);
+                    p_current_write_buffer->relative_timestamp.push_back(relative_timestamp_s);
+                    p_current_write_buffer->reflectivity.push_back(reflectivity[i]);
+                    p_current_write_buffer->signal.push_back(signal[i]);
+                    p_current_write_buffer->nir.push_back(nir[i]);
+
+                    this->number_points_++;
+                    if (is_first_point_of_current_frame) {
+                        p_current_write_buffer->timestamp = current_col_timestamp_s;
+                        p_current_write_buffer->frame_id = this->frame_id_;
+                        p_current_write_buffer->interframe_timedelta = (prev_frame_completed_latest_ts > 0.0)
+                            ? std::max(0.0, current_col_timestamp_s - prev_frame_completed_latest_ts) : 0.0;
+                        is_first_point_of_current_frame = false;
+                    }
                 }
             }
         }
 #else
-        // Scalar fallback
-        for (uint16_t c_id = 0; c_id < pixels_per_column_; ++c_id) {
-            size_t pixel_offset = block_offset + 12 + c_id * 12;
-            if (pixel_offset + 11 >= packet.size()) {
-                std::cerr << "Pixel offset out of bounds\n";
+        size_t first_pixel_in_block_offset = block_offset + 16;
+        for (uint16_t c_id = 0; c_id < static_cast<uint16_t>(pixels_per_column_); ++c_id) {
+            size_t pixel_data_offset = first_pixel_in_block_offset + c_id * 12;
+            if (pixel_data_offset + 11 >= packet.size()) {
                 continue;
             }
 
-            uint32_t range_mm;
-            uint8_t range_bytes[4] = {packet[pixel_offset], packet[pixel_offset + 1], packet[pixel_offset + 2], 0};
-            std::memcpy(&range_mm, range_bytes, 4);
-            range_mm = le32toh(range_mm) & 0x0007FFFF;
-            double range_m = range_mm * 0.001;
-            if (range_m < r_min_[c_id]) {
+            uint32_t range_mm_raw;
+            std::memcpy(&range_mm_raw, packet.data() + pixel_data_offset, sizeof(uint32_t));
+            uint32_t range_mm = le32toh(range_mm_raw) & 0x000FFFFF; // 20-bit range
+            double range_m = static_cast<double>(range_mm) * 0.001;
+
+            if (range_m < r_min_[c_id] || range_m == 0) {
                 continue;
             }
 
-            uint8_t reflectivity = packet[pixel_offset + 4];
-            uint16_t signal, nir;
-            std::memcpy(&signal, packet.data() + pixel_offset + 6, sizeof(uint16_t));
-            std::memcpy(&nir, packet.data() + pixel_offset + 8, sizeof(uint16_t));
-            signal = le16toh(signal);
-            nir = le16toh(nir);
+            uint8_t current_reflectivity;
+            std::memcpy(&current_reflectivity, packet.data() + pixel_data_offset + 4, sizeof(uint8_t));
+            uint16_t signal_raw, nir_raw;
+            std::memcpy(&signal_raw, packet.data() + pixel_data_offset + 6, sizeof(uint16_t));
+            std::memcpy(&nir_raw, packet.data() + pixel_data_offset + 8, sizeof(uint16_t));
+            uint16_t current_signal = le16toh(signal_raw);
+            uint16_t current_nir = le16toh(nir_raw);
 
             double pt_x = range_m * x_1_[m_id][c_id] + x_2_[m_id];
             double pt_y = range_m * y_1_[m_id][c_id] + y_2_[m_id];
             double pt_z = range_m * z_1_[m_id][c_id] + z_2_[m_id];
 
-            double relative_timestamp_s = write_buffer.numberpoints > 0 ? std::max(0.0, timestamp_s - write_buffer.timestamp) : 0.0;
+            double relative_timestamp_s = (p_current_write_buffer->numberpoints > 0 || this->number_points_ > 0) && p_current_write_buffer->timestamp > 0
+                ? std::max(0.0, current_col_timestamp_s - p_current_write_buffer->timestamp)
+                : 0.0;
 
-            write_buffer.x.push_back(pt_x);
-            write_buffer.y.push_back(pt_y);
-            write_buffer.z.push_back(pt_z);
-            write_buffer.c_id.push_back(c_id);
-            write_buffer.m_id.push_back(m_id);
-            write_buffer.timestamp_points.push_back(timestamp_s);
-            write_buffer.relative_timestamp.push_back(relative_timestamp_s);
-            write_buffer.reflectivity.push_back(reflectivity);
-            write_buffer.signal.push_back(signal);
-            write_buffer.nir.push_back(nir);
-            ++number_points_;
-            if (is_first_point) {
-                write_buffer.timestamp = timestamp_s;
-                write_buffer.frame_id = frame_id_;
-                write_buffer.interframe_timedelta = timestamp_s - prevframe_latest_timestamp_s;
-                is_first_point = false;
+            p_current_write_buffer->x.push_back(pt_x);
+            p_current_write_buffer->y.push_back(pt_y);
+            p_current_write_buffer->z.push_back(pt_z);
+            p_current_write_buffer->c_id.push_back(c_id);
+            p_current_write_buffer->m_id.push_back(m_id);
+            p_current_write_buffer->timestamp_points.push_back(current_col_timestamp_s);
+            p_current_write_buffer->relative_timestamp.push_back(relative_timestamp_s);
+            p_current_write_buffer->reflectivity.push_back(current_reflectivity);
+            p_current_write_buffer->signal.push_back(current_signal);
+            p_current_write_buffer->nir.push_back(current_nir);
+
+            this->number_points_++;
+            if (is_first_point_of_current_frame) {
+                p_current_write_buffer->timestamp = current_col_timestamp_s;
+                p_current_write_buffer->frame_id = this->frame_id_;
+                p_current_write_buffer->interframe_timedelta = (prev_frame_completed_latest_ts > 0.0)
+                    ? std::max(0.0, current_col_timestamp_s - prev_frame_completed_latest_ts) : 0.0;
+                is_first_point_of_current_frame = false;
             }
         }
 #endif
     }
-    write_buffer.numberpoints = number_points_;
-    frame = get_latest_frame();
+
+    if (p_current_write_buffer) {
+        p_current_write_buffer->numberpoints = this->number_points_;
+    }
+
+    frame = get_latest_lidar_frame();
+}
+
+
+void OusterLidarCallback::decode_packet_LidarIMU(const std::vector<uint8_t>& packet, LidarIMUDataFrame& frame) {
+    // Expected IMU packet size: 48 bytes (8+8+8+4+4+4+4+4+4)
+    const size_t EXPECTED_IMU_PACKET_SIZE = 48;
+    if (packet.size() != EXPECTED_IMU_PACKET_SIZE) {
+        std::cerr << "Invalid IMU packet size: " << packet.size() << ", expected: " << EXPECTED_IMU_PACKET_SIZE << std::endl;
+        return;
+    }
+
+    size_t offset = 0;
+
+    // IMU Diagnostic Time (uint64_t, 8 bytes)
+    uint64_t diag_time_raw;
+    std::memcpy(&diag_time_raw, packet.data() + offset, sizeof(uint64_t));
+    frame.IMU_Diagnostic_Time = le64toh(diag_time_raw);
+    offset += 8;
+
+    // Accelerometer Read Time (uint64_t, 8 bytes)
+    uint64_t accel_time_raw;
+    std::memcpy(&accel_time_raw, packet.data() + offset, sizeof(uint64_t));
+    frame.Accelerometer_Read_Time = le64toh(accel_time_raw);
+    offset += 8;
+
+    // Gyroscope Read Time (uint64_t, 8 bytes)
+    uint64_t gyro_time_raw;
+    std::memcpy(&gyro_time_raw, packet.data() + offset, sizeof(uint64_t));
+    frame.Gyroscope_Read_Time = le64toh(gyro_time_raw);
+    offset += 8;
+
+    // Acceleration X (float, 4 bytes)
+    std::memcpy(&frame.Acceleration_X, packet.data() + offset, sizeof(float));
+    offset += 4;
+
+    // Acceleration Y (float, 4 bytes)
+    std::memcpy(&frame.Acceleration_Y, packet.data() + offset, sizeof(float));
+    offset += 4;
+
+    // Acceleration Z (float, 4 bytes)
+    std::memcpy(&frame.Acceleration_Z, packet.data() + offset, sizeof(float));
+    offset += 4;
+
+    // Angular Velocity X (float, 4 bytes)
+    std::memcpy(&frame.AngularVelocity_X, packet.data() + offset, sizeof(float));
+    offset += 4;
+
+    // Angular Velocity Y (float, 4 bytes)
+    std::memcpy(&frame.AngularVelocity_Y, packet.data() + offset, sizeof(float));
+    offset += 4;
+
+    // Angular Velocity Z (float, 4 bytes)
+    std::memcpy(&frame.AngularVelocity_Z, packet.data() + offset, sizeof(float));
+    // offset += 4; // Total offset = 48, end of packet
+
+    // Validate timestamps
+    if (frame.Accelerometer_Read_Time == 0 || frame.Gyroscope_Read_Time == 0) {
+        std::cerr << "Invalid IMU timestamps: Accel=" << frame.Accelerometer_Read_Time << ", Gyro=" << frame.Gyroscope_Read_Time << std::endl;
+        return;
+    }
 }
 

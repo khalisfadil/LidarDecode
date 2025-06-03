@@ -6,7 +6,7 @@
 
 #include <Point.hpp>
 
-struct DataFrame {
+struct LidarDataFrame {
     uint16_t frame_id = 0;
     double timestamp = 0.0;                       // Current timestamp
     double interframe_timedelta = 0.0;            // Time difference between first point in current frame and last point in last frame
