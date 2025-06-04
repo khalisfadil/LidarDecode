@@ -8,6 +8,7 @@ int main() {
     std::string udp_profile_lidar;
     std::string udp_dest;
     uint16_t udp_port_lidar; // Fallback to default port
+    uint16_t udp_port_imu;
     try {
         std::ifstream json_file(json_path);
         if (!json_file.is_open()) {
@@ -38,6 +39,7 @@ int main() {
 
         udp_profile_lidar = metadata_["config_params"]["udp_profile_lidar"].get<std::string>();
         udp_port_lidar = metadata_["config_params"]["udp_port_lidar"].get<uint16_t>();
+        udp_port_imu = metadata_["config_params"]["udp_port_imu"].get<uint16_t>();
         udp_dest = metadata_["config_params"]["udp_dest"].get<std::string>();
 
     } catch (const std::exception& e) {
@@ -98,7 +100,11 @@ int main() {
                 return EXIT_FAILURE;
         }
 
-        threads.emplace_back([&]() { pipeline.runVisualizer(std::vector<int>{1}); });
+        threads.emplace_back([&]() { 
+                    pipeline.runOusterLidarIMUListener(ioContextPoints, udp_dest, udp_port_imu, lidar_packet_size, std::vector<int>{1}); 
+                });
+
+        threads.emplace_back([&]() { pipeline.runVisualizer(std::vector<int>{2}); });
 
         while (Pipeline::running_.load(std::memory_order_acquire)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
