@@ -76,18 +76,18 @@ void Pipeline::runOusterLidarListenerSingleReturn(boost::asio::io_context& ioCon
             //    Inside decode_packet_single_return, frame_data_copy is assigned
             //    (via DataFrame::operator=) the contents of lidarCallback's completed buffer.
             //    This results in a deep copy into frame_data_copy.
-            lidarCallback.decode_packet_single_return(packet_data, frame_data_copy);
+            lidarCallback.decode_packet_single_return(packet_data, frame_data_copy_);
 
             // 3. Now frame_data_copy is an independent, deep copy of the relevant frame.
             //    We can safely use it and then move it into the queue.
-            if (frame_data_copy.numberpoints > 0 && frame_data_copy.frame_id != this->frame_id_) {
-                this->frame_id_ = frame_data_copy.frame_id;
+            if (frame_data_copy_.numberpoints > 0 && frame_data_copy_.frame_id != this->frame_id_) {
+                this->frame_id_ = frame_data_copy_.frame_id;
                 
                 // 4. Move frame_data_copy into the SPSC queue.
                 //    This transfers ownership of frame_data_copy's internal resources (vector data)
                 //    to the element constructed in the queue, avoiding another full copy.
                 //    frame_data_copy is left in a valid but unspecified (likely empty) state.
-                if (!decodedPoint_buffer_.push(std::move(frame_data_copy))) {
+                if (!decodedPoint_buffer_.push(std::move(frame_data_copy_))) {
                     std::lock_guard<std::mutex> lock(consoleMutex);
                     std::cerr << "[Pipeline] Listener: SPSC buffer push failed for frame " 
                               << this->frame_id_ // Use this->frame_id_ as frame_data_copy might be moved-from
@@ -170,18 +170,18 @@ void Pipeline::runOusterLidarListenerLegacy(boost::asio::io_context& ioContext,
             //    Inside decode_packet_single_return, frame_data_copy is assigned
             //    (via DataFrame::operator=) the contents of lidarCallback's completed buffer.
             //    This results in a deep copy into frame_data_copy.
-            lidarCallback.decode_packet_legacy(packet_data, frame_data_copy);
+            lidarCallback.decode_packet_legacy(packet_data, frame_data_copy_);
 
             // 3. Now frame_data_copy is an independent, deep copy of the relevant frame.
             //    We can safely use it and then move it into the queue.
-            if (frame_data_copy.numberpoints > 0 && frame_data_copy.frame_id != this->frame_id_) {
-                this->frame_id_ = frame_data_copy.frame_id;
+            if (frame_data_copy_.numberpoints > 0 && frame_data_copy_.frame_id != this->frame_id_) {
+                this->frame_id_ = frame_data_copy_.frame_id;
                 
                 // 4. Move frame_data_copy into the SPSC queue.
                 //    This transfers ownership of frame_data_copy's internal resources (vector data)
                 //    to the element constructed in the queue, avoiding another full copy.
                 //    frame_data_copy is left in a valid but unspecified (likely empty) state.
-                if (!decodedPoint_buffer_.push(std::move(frame_data_copy))) {
+                if (!decodedPoint_buffer_.push(std::move(frame_data_copy_))) {
                     std::lock_guard<std::mutex> lock(consoleMutex);
                     std::cerr << "[Pipeline] Listener: SPSC buffer push failed for frame " 
                               << this->frame_id_ // Use this->frame_id_ as frame_data_copy might be moved-from
@@ -257,27 +257,27 @@ void Pipeline::runOusterLidarIMUListener(boost::asio::io_context& ioContext,
     UdpSocket listener(ioContext, host, port,
         // Lambda callback:
         [&](const std::vector<uint8_t>& packet_data) {
-            LidarIMUDataFrame frame_data_copy; // 1. Local DataFrame created.
+            LidarIMUDataFrame frame_data_IMU_copy; // 1. Local DataFrame created.
                                        //    It will hold a deep copy of the lidar data.
 
             // 2. lidarCallback processes the packet.
             //    Inside decode_packet_single_return, frame_data_copy is assigned
             //    (via DataFrame::operator=) the contents of lidarCallback's completed buffer.
             //    This results in a deep copy into frame_data_copy.
-            lidarCallback.decode_packet_LidarIMU(packet_data, frame_data_copy);
+            lidarCallback.decode_packet_LidarIMU(packet_data, frame_data_IMU_copy);
 
             // 3. Now frame_data_copy is an independent, deep copy of the relevant frame.
             //    We can safely use it and then move it into the queue.
-            if (frame_data_copy.Accelerometer_Read_Time > 0 && frame_data_copy.Gyroscope_Read_Time > 0 && frame_data_copy.Accelerometer_Read_Time != this->Accelerometer_Read_Time_ && frame_data_copy.Gyroscope_Read_Time != this->Gyroscope_Read_Time_) {
+            if (frame_data_IMU_copy.Accelerometer_Read_Time > 0 && frame_data_IMU_copy.Gyroscope_Read_Time > 0 && frame_data_IMU_copy.Accelerometer_Read_Time != this->Accelerometer_Read_Time_ && frame_data_IMU_copy.Gyroscope_Read_Time != this->Gyroscope_Read_Time_) {
 
-                this->Accelerometer_Read_Time_ = frame_data_copy.Accelerometer_Read_Time;
-                this->Gyroscope_Read_Time_ = frame_data_copy.Gyroscope_Read_Time;
+                this->Accelerometer_Read_Time_ = frame_data_IMU_copy.Accelerometer_Read_Time;
+                this->Gyroscope_Read_Time_ = frame_data_IMU_copy.Gyroscope_Read_Time;
                 
                 // 4. Move frame_data_copy into the SPSC queue.
                 //    This transfers ownership of frame_data_copy's internal resources (vector data)
                 //    to the element constructed in the queue, avoiding another full copy.
                 //    frame_data_copy is left in a valid but unspecified (likely empty) state.
-                if (!decodedLidarIMU_buffer_.push(std::move(frame_data_copy))) {
+                if (!decodedLidarIMU_buffer_.push(std::move(frame_data_IMU_copy))) {
                     std::lock_guard<std::mutex> lock(consoleMutex);
                     std::cerr << "[Pipeline] Listener: SPSC buffer push failed for frame " 
                               << this->frame_id_ // Use this->frame_id_ as frame_data_copy might be moved-from
