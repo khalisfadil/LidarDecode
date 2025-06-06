@@ -3,22 +3,23 @@
 #include <cstdint>
 
 struct LidarIMUDataFrame {
+    double Normalized_Timestamp_s = 0.0;  // Normalized timestamp in seconds
+    double IMU_Diagnostic_Time_s = 0.0;  // Diagnostic timestamp in seconds
+    double Accelerometer_Read_Time_s = 0.0;  // Accelerometer timestamp in seconds
+    double Gyroscope_Read_Time_s = 0.0;  // Gyroscope timestamp in seconds
+    float Acceleration_X = 0.0;  // g
+    float Acceleration_Y = 0.0;  // g
+    float Acceleration_Z = 0.0;  // g
+    float AngularVelocity_X = 0.0;  // deg/s
+    float AngularVelocity_Y = 0.0;  // deg/s
+    float AngularVelocity_Z = 0.0;  // deg/s
 
-    uint64_t IMU_Diagnostic_Time = 0.0;
-    uint64_t Accelerometer_Read_Time = 0.0;
-    uint64_t Gyroscope_Read_Time = 0.0;
-    float Acceleration_X = 0.0;
-    float Acceleration_Y = 0.0;
-    float Acceleration_Z = 0.0;
-    float AngularVelocity_X = 0.0;
-    float AngularVelocity_Y = 0.0;
-    float AngularVelocity_Z = 0.0;
-
-    // Clear all vectors
+    // Clear all fields
     void clear() {
-        IMU_Diagnostic_Time = 0.0;
-        Accelerometer_Read_Time = 0.0;
-        Gyroscope_Read_Time = 0.0;
+        Normalized_Timestamp_s = 0.0;
+        IMU_Diagnostic_Time_s = 0.0;
+        Accelerometer_Read_Time_s = 0.0;
+        Gyroscope_Read_Time_s = 0.0;
         Acceleration_X = 0.0;
         Acceleration_Y = 0.0;
         Acceleration_Z = 0.0;

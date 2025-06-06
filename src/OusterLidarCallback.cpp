@@ -736,64 +736,83 @@ void OusterLidarCallback::decode_packet_legacy(const std::vector<uint8_t>& packe
 
 // -----------------------------------------------------------------------------
 
-void OusterLidarCallback::decode_packet_LidarIMU(const std::vector<uint8_t>& packet, LidarIMUDataFrame& frame) {
-    // Expected IMU packet size: 48 bytes (8+8+8+4+4+4+4+4+4)
-    const size_t EXPECTED_IMU_PACKET_SIZE = 48;
-    if (packet.size() != EXPECTED_IMU_PACKET_SIZE) {
-        std::cerr << "Invalid IMU packet size: " << packet.size() << ", expected: " << EXPECTED_IMU_PACKET_SIZE << std::endl;
-        return;
+ void OusterLidarCallback::decode_packet_LidarIMU(const std::vector<uint8_t>& packet, LidarIMUDataFrame& frame) {
+        // Expected IMU packet size: 48 bytes (8+8+8+4+4+4+4+4+4)
+        const size_t EXPECTED_IMU_PACKET_SIZE = 48;
+        if (packet.size() != EXPECTED_IMU_PACKET_SIZE) {
+            std::cerr << "Invalid IMU packet size: " << packet.size() 
+                      << ", expected: " << EXPECTED_IMU_PACKET_SIZE << std::endl;
+            frame.clear();
+            return;
+        }
+
+        size_t offset = 0;
+
+        // IMU Diagnostic Time (uint64_t, 8 bytes)
+        uint64_t diag_time_raw;
+        std::memcpy(&diag_time_raw, packet.data() + offset, sizeof(uint64_t));
+        frame.IMU_Diagnostic_Time_s = static_cast<double>(le64toh(diag_time_raw)) / 1e9;
+        offset += 8;
+
+        // Accelerometer Read Time (uint64_t, 8 bytes)
+        uint64_t accel_time_raw;
+        std::memcpy(&accel_time_raw, packet.data() + offset, sizeof(uint64_t));
+        frame.Accelerometer_Read_Time_s = static_cast<double>(le64toh(accel_time_raw)) / 1e9;
+        offset += 8;
+
+        // Gyroscope Read Time (uint64_t, 8 bytes)
+        uint64_t gyro_time_raw;
+        std::memcpy(&gyro_time_raw, packet.data() + offset, sizeof(uint64_t));
+        frame.Gyroscope_Read_Time_s = static_cast<double>(le64toh(gyro_time_raw)) / 1e9;
+        offset += 8;
+
+        // Acceleration X (float, 4 bytes)
+        std::memcpy(&frame.Acceleration_X, packet.data() + offset, sizeof(float));
+        offset += 4;
+
+        // Acceleration Y (float, 4 bytes)
+        std::memcpy(&frame.Acceleration_Y, packet.data() + offset, sizeof(float));
+        offset += 4;
+
+        // Acceleration Z (float, 4 bytes)
+        std::memcpy(&frame.Acceleration_Z, packet.data() + offset, sizeof(float));
+        offset += 4;
+
+        // Angular Velocity X (float, 4 bytes)
+        std::memcpy(&frame.AngularVelocity_X, packet.data() + offset, sizeof(float));
+        offset += 4;
+
+        // Angular Velocity Y (float, 4 bytes)
+        std::memcpy(&frame.AngularVelocity_Y, packet.data() + offset, sizeof(float));
+        offset += 4;
+
+        // Angular Velocity Z (float, 4 bytes)
+        std::memcpy(&frame.AngularVelocity_Z, packet.data() + offset, sizeof(float));
+        // offset += 4; // Total offset = 48, end of packet
+
+        // Validate timestamps
+        if (frame.Accelerometer_Read_Time_s == 0.0 || frame.Gyroscope_Read_Time_s == 0.0) {
+            std::cerr << "Invalid IMU timestamps: Accel=" << frame.Accelerometer_Read_Time_s 
+                      << ", Gyro=" << frame.Gyroscope_Read_Time_s << std::endl;
+            frame.clear();
+            return;
+        }
+
+        // Compute normalized timestamp (average of accel and gyro times)
+        const uint64_t max_diff_ns = 1000000; // 1ms threshold
+        uint64_t accel_time_ns = static_cast<uint64_t>(frame.Accelerometer_Read_Time_s * 1e9);
+        uint64_t gyro_time_ns = static_cast<uint64_t>(frame.Gyroscope_Read_Time_s * 1e9);
+        uint64_t diff = (accel_time_ns > gyro_time_ns) 
+                        ? (accel_time_ns - gyro_time_ns) 
+                        : (gyro_time_ns - accel_time_ns);
+        if (diff > max_diff_ns) {
+            std::cerr << "[packet LidarIMU] Timestamp difference accel and gyro too large: " << diff << " ns" << std::endl;
+            frame.clear();
+            return;
+        }
+
+        frame.Normalized_Timestamp_s = (frame.Accelerometer_Read_Time_s + frame.Gyroscope_Read_Time_s) / 2.0;
     }
-
-    size_t offset = 0;
-
-    // IMU Diagnostic Time (uint64_t, 8 bytes)
-    uint64_t diag_time_raw;
-    std::memcpy(&diag_time_raw, packet.data() + offset, sizeof(uint64_t));
-    frame.IMU_Diagnostic_Time = le64toh(diag_time_raw);
-    offset += 8;
-
-    // Accelerometer Read Time (uint64_t, 8 bytes)
-    uint64_t accel_time_raw;
-    std::memcpy(&accel_time_raw, packet.data() + offset, sizeof(uint64_t));
-    frame.Accelerometer_Read_Time = le64toh(accel_time_raw);
-    offset += 8;
-
-    // Gyroscope Read Time (uint64_t, 8 bytes)
-    uint64_t gyro_time_raw;
-    std::memcpy(&gyro_time_raw, packet.data() + offset, sizeof(uint64_t));
-    frame.Gyroscope_Read_Time = le64toh(gyro_time_raw);
-    offset += 8;
-
-    // Acceleration X (float, 4 bytes)
-    std::memcpy(&frame.Acceleration_X, packet.data() + offset, sizeof(float));
-    offset += 4;
-
-    // Acceleration Y (float, 4 bytes)
-    std::memcpy(&frame.Acceleration_Y, packet.data() + offset, sizeof(float));
-    offset += 4;
-
-    // Acceleration Z (float, 4 bytes)
-    std::memcpy(&frame.Acceleration_Z, packet.data() + offset, sizeof(float));
-    offset += 4;
-
-    // Angular Velocity X (float, 4 bytes)
-    std::memcpy(&frame.AngularVelocity_X, packet.data() + offset, sizeof(float));
-    offset += 4;
-
-    // Angular Velocity Y (float, 4 bytes)
-    std::memcpy(&frame.AngularVelocity_Y, packet.data() + offset, sizeof(float));
-    offset += 4;
-
-    // Angular Velocity Z (float, 4 bytes)
-    std::memcpy(&frame.AngularVelocity_Z, packet.data() + offset, sizeof(float));
-    // offset += 4; // Total offset = 48, end of packet
-
-    // Validate timestamps
-    if (frame.Accelerometer_Read_Time == 0 || frame.Gyroscope_Read_Time == 0) {
-        std::cerr << "Invalid IMU timestamps: Accel=" << frame.Accelerometer_Read_Time << ", Gyro=" << frame.Gyroscope_Read_Time << std::endl;
-        return;
-    }
-}
-
+    
 // -----------------------------------------------------------------------------
 
