@@ -268,10 +268,10 @@ void Pipeline::runOusterLidarIMUListener(boost::asio::io_context& ioContext,
 
             // 3. Now frame_data_copy is an independent, deep copy of the relevant frame.
             //    We can safely use it and then move it into the queue.
-            if (frame_data_IMU_copy.Accelerometer_Read_Time > 0 && frame_data_IMU_copy.Gyroscope_Read_Time > 0 && frame_data_IMU_copy.Accelerometer_Read_Time != this->Accelerometer_Read_Time_ && frame_data_IMU_copy.Gyroscope_Read_Time != this->Gyroscope_Read_Time_) {
+            if (frame_data_IMU_copy.Accelerometer_Read_Time_s > 0 && frame_data_IMU_copy.Gyroscope_Read_Time_s > 0 && frame_data_IMU_copy.Accelerometer_Read_Time_s != this->Accelerometer_Read_Time_ && frame_data_IMU_copy.Gyroscope_Read_Time_s != this->Gyroscope_Read_Time_) {
 
-                this->Accelerometer_Read_Time_ = frame_data_IMU_copy.Accelerometer_Read_Time;
-                this->Gyroscope_Read_Time_ = frame_data_IMU_copy.Gyroscope_Read_Time;
+                this->Accelerometer_Read_Time_ = frame_data_IMU_copy.Accelerometer_Read_Time_s;
+                this->Gyroscope_Read_Time_ = frame_data_IMU_copy.Gyroscope_Read_Time_s;
                 
                 // 4. Move frame_data_copy into the SPSC queue.
                 //    This transfers ownership of frame_data_copy's internal resources (vector data)
