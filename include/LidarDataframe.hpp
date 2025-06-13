@@ -78,7 +78,7 @@ namespace lidarDecode {
                 Points3D point;
                 point.raw_pt = Eigen::Vector3d(x[i], y[i], z[i]); // Raw sensor coordinates
                 point.pt = point.raw_pt; // No motion correction; set equal to raw_pt
-                point.att = Eigen::Vector3i::Zero(); // Placeholder: no direct mapping
+                point.att = Eigen::Vector3i(static_cast<int>(reflectivity[i]), static_cast<int>(signal[i]), static_cast<int>(nir[i])); // Placeholder: no direct mapping
                 point.relative_timestamp = relative_timestamp[i]; // Assumed to be in [0.0, 1.0]
                 point.timestamp = timestamp_points[i]; // Absolute timestamp
                 point.m_id = static_cast<int>(m_id[i]); // Convert uint16_t to int
