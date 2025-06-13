@@ -17,4 +17,13 @@ namespace lidarDecode {
         uint16_t nir = 0;              // Near-infrared value
     };
 
+    struct Points3D {
+        Eigen::Vector3d raw_pt;  // Raw point read from the sensor
+        Eigen::Vector3d pt;      // Corrected point taking into account the motion of the sensor during frame acquisition
+        Eigen::Vector3i att;
+        double relative_timestamp = 0.0;  // Relative timestamp in the frame in [0.0, 1.0]
+        double timestamp = 0.0;        // The absolute timestamp (if applicable)
+        int m_id = -1;              // The beam id of the point
+    };
+
 } // namespace lidarDecode
