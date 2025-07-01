@@ -10,7 +10,7 @@ namespace lidarDecode {
 
     struct LidarDataFrame {
         uint16_t frame_id = 0;
-        double timestamp = 0.0;                       // Current timestamp
+        double timestamp = 0.0;                       // Current timestamp, unix timestamp (PTP sync)
         double interframe_timedelta = 0.0;            // Time difference between first point in current frame and last point in last frame
         uint32_t numberpoints = 0;
 

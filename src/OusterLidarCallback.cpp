@@ -96,7 +96,7 @@ namespace lidarDecode {
                 throw std::runtime_error("'lidar_to_sensor_transform' must be an array of 16 elements");
             }
             
-            Eigen::Matrix4d raw_transform = Eigen::Matrix4d::Identity(); // Not strictly needed if lidar_to_sensor_transform_ is filled directly
+            // Eigen::Matrix4d raw_transform = Eigen::Matrix4d::Identity(); // Not strictly needed if lidar_to_sensor_transform_ is filled directly
             lidar_to_sensor_transform_ = Eigen::Matrix4d::Identity();
             for (int i = 0; i < 4; ++i) {
                 for (int j = 0; j < 4; ++j) {
@@ -344,7 +344,7 @@ namespace lidarDecode {
             for (uint16_t c_id_base = 0; c_id_base < static_cast<uint16_t>(pixels_per_column_); c_id_base += 4) {
                 // Offset to first pixel data in column block is 12 bytes (ts 8B, m_id 2B, status 1B, encoder 2B -> total 12B before pixels)
                 size_t first_pixel_in_block_offset = block_offset + 12; 
-                size_t pixel_group_offset = first_pixel_in_block_offset + c_id_base * 12; // 12 bytes per pixel data
+                // size_t pixel_group_offset = first_pixel_in_block_offset + c_id_base * 12; // 12 bytes per pixel data
 
                 alignas(32) double range_m[4];
                 alignas(32) double r_min_vals[4];
@@ -587,7 +587,7 @@ namespace lidarDecode {
     #ifdef __AVX2__
             for (uint16_t c_id_base = 0; c_id_base < static_cast<uint16_t>(pixels_per_column_); c_id_base += 4) {
                 size_t first_pixel_in_block_offset = block_offset + 16;
-                size_t pixel_group_offset = first_pixel_in_block_offset + c_id_base * 12;
+                // size_t pixel_group_offset = first_pixel_in_block_offset + c_id_base * 12;
 
                 alignas(32) double range_m[4];
                 alignas(32) double r_min_vals[4];
@@ -805,6 +805,8 @@ namespace lidarDecode {
                 frame.clear();
                 return;
             }
+
+            //>> todo: transform value into lidar sensor coordinate
 
             // Compute normalized timestamp (average of accel and gyro times)
             const uint64_t max_diff_ns = 1000000; // 1ms threshold
