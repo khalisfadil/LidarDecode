@@ -174,10 +174,18 @@ namespace lidarDecode {
         z_2_.resize(columns_per_frame_);
 
         // Transformation matrix: sensor (Ouster default: x=forward, y=left, z=up) to desired ROS-like (x=front, y=right, z=down)
-        Eigen::Matrix4d sensor_to_desired_transform = Eigen::Matrix4d::Identity();
-        sensor_to_desired_transform(0, 0) = -1.0;
-        sensor_to_desired_transform(1, 1) = 1.0;
-        sensor_to_desired_transform(2, 2) = -1.0;
+        // Eigen::Matrix4d sensor_to_desired_transform = Eigen::Matrix4d::Identity();
+        // sensor_to_desired_transform(0, 0) = -1.0;
+        // sensor_to_desired_transform(1, 1) = 1.0;
+        // sensor_to_desired_transform(2, 2) = -1.0;
+
+        // Define lidar_to_desired_transform with given rotation and translation
+        Eigen::Matrix4d lidar_to_desired_transform = Eigen::Matrix4d::Identity();
+        lidar_to_desired_transform.block<3,3>(0,0) <<  0.021814, -0.999762, 0,
+                                                        -0.999762, -0.021814, 0,
+                                                        0,         0,       -1;
+
+        lidar_to_desired_transform.block<3,1>(0,3) << -0.0775, 0, -0.17;
 
         for (int i = 0; i < pixels_per_column_; ++i) {
             double az_deg = azimuth_angles_json[i].get<double>();
@@ -201,7 +209,7 @@ namespace lidarDecode {
                 0.0,
                 1.0);
 
-            Eigen::Vector4d offset_transformed = sensor_to_desired_transform * lidar_to_sensor_transform_ * offset_lidar_frame;
+            Eigen::Vector4d offset_transformed = lidar_to_desired_transform * offset_lidar_frame;
             x_2_[m_id] = offset_transformed.x();
             y_2_[m_id] = offset_transformed.y();
             z_2_[m_id] = offset_transformed.z();
@@ -222,7 +230,7 @@ namespace lidarDecode {
                     sin_alt,
                     0.0);
 
-                Eigen::Vector4d dir_transformed = sensor_to_desired_transform * lidar_to_sensor_transform_ * dir_lidar_frame;
+                Eigen::Vector4d dir_transformed = lidar_to_desired_transform * dir_lidar_frame;
                 x_1_[m_id][ch] = dir_transformed.x();
                 y_1_[m_id][ch] = dir_transformed.y();
                 z_1_[m_id][ch] = dir_transformed.z();
