@@ -162,7 +162,7 @@ namespace lidarDecode {
         cos_beam_azimuths_.resize(pixels_per_column_);
         sin_beam_altitudes_.resize(pixels_per_column_);
         cos_beam_altitudes_.resize(pixels_per_column_);
-        r_min_.resize(pixels_per_column_, 0.1);
+        r_min_.resize(pixels_per_column_, 5.0); // define r_min_ based on the size of the vehicle
 
         // Initialize transposed lookup tables: [m_id][c_id]
         x_1_.assign(columns_per_frame_, std::vector<double, Eigen::aligned_allocator<double>>(pixels_per_column_));
