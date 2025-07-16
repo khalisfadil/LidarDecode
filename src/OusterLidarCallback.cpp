@@ -288,6 +288,7 @@ namespace lidarDecode {
             // Frame transition detected. The frame in p_current_write_buffer is now complete.
             if (this->frame_id_ != 0 || this->number_points_ > 0) { // Avoid operations for uninitialized/empty first "previous" frame
                 p_current_write_buffer->numberpoints = this->number_points_; // p_current_write_buffer->timestamp and ->frame_id were set by the first point of that frame.
+                p_current_write_buffer->timestamp_end = this->latest_timestamp_s; // the end of timestamp of current frame
             }
             
             prev_frame_completed_latest_ts = this->latest_timestamp_s; // Timestamp of the last point of the frame that just completed.
@@ -537,8 +538,7 @@ namespace lidarDecode {
                 std::cerr << "Negative column timestamp: " << current_col_timestamp_s << std::endl;
                 continue;
             }
-            this->latest_timestamp_s = current_col_timestamp_s;
-
+            
             uint16_t m_id_raw;
             std::memcpy(&m_id_raw, packet.data() + block_offset + 8, sizeof(uint16_t));
             uint16_t m_id = le16toh(m_id_raw);
@@ -555,6 +555,7 @@ namespace lidarDecode {
             if (current_packet_frame_id != this->frame_id_) {
                 if (this->frame_id_ != 0 || this->number_points_ > 0) {
                     p_current_write_buffer->numberpoints = this->number_points_;
+                    p_current_write_buffer->timestamp_end = this->latest_timestamp_s; // the end of timestamp of current frame
                 }
 
                 prev_frame_completed_latest_ts = this->latest_timestamp_s;
@@ -572,6 +573,8 @@ namespace lidarDecode {
                 p_current_write_buffer->clear();
                 p_current_write_buffer->reserve(columns_per_frame_ * pixels_per_column_);
             }
+
+            this->latest_timestamp_s = current_col_timestamp_s; // Update class member with latest received timestamp
 
             // Measurement block status is after header (16 bytes) and channel data (pixels_per_column_ * 12 bytes)
             uint32_t block_status;
