@@ -89,7 +89,7 @@ namespace lidarDecode {
         // }
 
         // Convert to AoS (std::vector<Point3D>) for compatibility
-        std::vector<Point3D> LidarDataFrame::toPoint3D() const {
+        std::vector<Point3D> toPoint3D() const {
             std::vector<Point3D> pointcloud;
             pointcloud.reserve(numberpoints);
 
