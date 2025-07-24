@@ -113,7 +113,6 @@ namespace lidarDecode {
                     // If frame duration is zero or invalid, set alpha_timestamp to 0.
                     point.alpha_timestamp = 0.0;
                 }
-
                 pointcloud.push_back(point);
             }
             return pointcloud;
