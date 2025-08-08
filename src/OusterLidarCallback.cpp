@@ -28,7 +28,6 @@ namespace lidarDecode {
 
     // -----------------------------------------------------------------------------
 
-<<<<<<< HEAD
     OusterLidarCallback::OusterLidarCallback(const std::string& json_path, const LidarTransformPreset& T) 
         :transform_preset_(T){
 
@@ -63,32 +62,13 @@ namespace lidarDecode {
         //             << metadata_json_path << "' and GEHLSDORF20250410 preset." << std::endl;
         //     std::cout << "Ready to decode packets." << std::endl;
         // }
-=======
-    OusterLidarCallback::OusterLidarCallback(const std::string& json_path) {
-        std::ifstream file(json_path);
-        if (!file.is_open()) {
-            throw std::runtime_error("Failed to open JSON file: " + json_path);
-        }
-        json json_data;
-        try {
-            file >> json_data;
-        } catch (const json::parse_error& e) {
-            throw std::runtime_error("JSON parse error in " + json_path + ": " + e.what());
-        }
-        parse_metadata(json_data);
-        initialize();
->>>>>>> 4ef56aa12e275be6953f1d0ecd674e30c96f5334
     }
 
     // -----------------------------------------------------------------------------
 
-<<<<<<< HEAD
     OusterLidarCallback::OusterLidarCallback(const json& json_data, const LidarTransformPreset& T) 
         :transform_preset_(T){
 
-=======
-    OusterLidarCallback::OusterLidarCallback(const json& json_data) {
->>>>>>> 4ef56aa12e275be6953f1d0ecd674e30c96f5334
         parse_metadata(json_data);
         initialize();
     }
@@ -244,7 +224,6 @@ namespace lidarDecode {
                 // It's good practice to have a default case that handles unknown values.
                 throw std::runtime_error("Unsupported LidarTransformPreset selected.");
         }
-
 
         for (int i = 0; i < pixels_per_column_; ++i) {
             double az_deg = azimuth_angles_json[i].get<double>();
