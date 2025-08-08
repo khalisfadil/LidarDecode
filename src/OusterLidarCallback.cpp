@@ -216,7 +216,6 @@ namespace lidarDecode {
         y_2_.resize(columns_per_frame_);
         z_2_.resize(columns_per_frame_);
 
-<<<<<<< HEAD
         // lidar_to_desired_transform.block<3,1>(0,3) << -0.0775, 0, -0.17;
         // Use a switch statement to populate the matrix based on the preset.
         Eigen::Matrix4d lidar_to_desired_transform = Eigen::Matrix4d::Identity(); // T desiredtrasnformed <- lidar
