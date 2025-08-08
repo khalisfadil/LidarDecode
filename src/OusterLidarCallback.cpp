@@ -28,6 +28,7 @@ namespace lidarDecode {
 
     // -----------------------------------------------------------------------------
 
+<<<<<<< HEAD
     OusterLidarCallback::OusterLidarCallback(const std::string& json_path, const LidarTransformPreset& T) 
         :transform_preset_(T){
 
@@ -62,13 +63,32 @@ namespace lidarDecode {
         //             << metadata_json_path << "' and GEHLSDORF20250410 preset." << std::endl;
         //     std::cout << "Ready to decode packets." << std::endl;
         // }
+=======
+    OusterLidarCallback::OusterLidarCallback(const std::string& json_path) {
+        std::ifstream file(json_path);
+        if (!file.is_open()) {
+            throw std::runtime_error("Failed to open JSON file: " + json_path);
+        }
+        json json_data;
+        try {
+            file >> json_data;
+        } catch (const json::parse_error& e) {
+            throw std::runtime_error("JSON parse error in " + json_path + ": " + e.what());
+        }
+        parse_metadata(json_data);
+        initialize();
+>>>>>>> 4ef56aa12e275be6953f1d0ecd674e30c96f5334
     }
 
     // -----------------------------------------------------------------------------
 
+<<<<<<< HEAD
     OusterLidarCallback::OusterLidarCallback(const json& json_data, const LidarTransformPreset& T) 
         :transform_preset_(T){
 
+=======
+    OusterLidarCallback::OusterLidarCallback(const json& json_data) {
+>>>>>>> 4ef56aa12e275be6953f1d0ecd674e30c96f5334
         parse_metadata(json_data);
         initialize();
     }
@@ -196,6 +216,7 @@ namespace lidarDecode {
         y_2_.resize(columns_per_frame_);
         z_2_.resize(columns_per_frame_);
 
+<<<<<<< HEAD
         // lidar_to_desired_transform.block<3,1>(0,3) << -0.0775, 0, -0.17;
         // Use a switch statement to populate the matrix based on the preset.
         Eigen::Matrix4d lidar_to_desired_transform = Eigen::Matrix4d::Identity(); // T desiredtrasnformed <- lidar
