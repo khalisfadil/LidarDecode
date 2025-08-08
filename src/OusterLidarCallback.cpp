@@ -286,11 +286,11 @@ namespace lidarDecode {
             throw std::runtime_error("pixel_shifts_ size mismatch after initialization");
         }
 
-    #ifdef DEBUG
+#ifdef DEBUG
         if (!x_1_.empty() && !x_1_[0].empty()) {
             assert(reinterpret_cast<uintptr_t>(x_1_[0].data()) % 32 == 0 && "x_1_[0].data() not 32-byte aligned!");
         }
-    #endif
+#endif
     }
 
     // -----------------------------------------------------------------------------
