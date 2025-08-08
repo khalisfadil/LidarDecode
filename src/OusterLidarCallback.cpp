@@ -28,24 +28,47 @@ namespace lidarDecode {
 
     // -----------------------------------------------------------------------------
 
-    OusterLidarCallback::OusterLidarCallback(const std::string& json_path) {
+    OusterLidarCallback::OusterLidarCallback(const std::string& json_path, const LidarTransformPreset& T) 
+        :transform_preset_(T){
+
         std::ifstream file(json_path);
-        if (!file.is_open()) {
-            throw std::runtime_error("Failed to open JSON file: " + json_path);
-        }
+        if (!file.is_open()) {throw std::runtime_error("Failed to open JSON file: " + json_path);}
         json json_data;
-        try {
-            file >> json_data;
-        } catch (const json::parse_error& e) {
-            throw std::runtime_error("JSON parse error in " + json_path + ": " + e.what());
-        }
+        try {file >> json_data;
+        } catch (const json::parse_error& e) {throw std::runtime_error("JSON parse error in " + json_path + ": " + e.what());}
+
         parse_metadata(json_data);
         initialize();
+
+        // // Example
+        // // This file is essential as it contains all sensor-specific calibration
+        // // data, such as beam angles and intrinsics.
+        // std::string metadata_json_path = "path/to/your/ouster_metadata.json";
+
+        // // 2. Choose the desired transformation preset from the enum.
+        // // This corresponds to a specific, pre-configured extrinsic calibration
+        // // for a particular vehicle or setup. Given the current location is Rostock,
+        // // we'll select the Gehlsdorf preset.
+        // auto transform_preset = lidarDecode::OusterLidarCallback::LidarTransformPreset::GEHLSDORF20250410;
+
+        // try {
+        //     // 3. Construct the OusterLidarCallback object.
+        //     // The constructor reads and parses the JSON file, then calls the
+        //     // initialize() method to set up all necessary lookup tables based
+        //     // on the file's content and the chosen transformation preset.
+        //     lidarDecode::OusterLidarCallback lidar_decoder(metadata_json_path, transform_preset);
+
+        //     std::cout << "Successfully initialized OusterLidarCallback with '"
+        //             << metadata_json_path << "' and GEHLSDORF20250410 preset." << std::endl;
+        //     std::cout << "Ready to decode packets." << std::endl;
+        // }
     }
 
     // -----------------------------------------------------------------------------
 
-    OusterLidarCallback::OusterLidarCallback(const json& json_data) {
+    OusterLidarCallback::OusterLidarCallback(const json& json_data, const LidarTransformPreset& T) 
+        :transform_preset_(T){
+
         parse_metadata(json_data);
         initialize();
     }
@@ -173,19 +196,35 @@ namespace lidarDecode {
         y_2_.resize(columns_per_frame_);
         z_2_.resize(columns_per_frame_);
 
-        // Transformation matrix: sensor (Ouster default: x=forward, y=left, z=up) to desired ROS-like (x=front, y=right, z=down)
-        // Eigen::Matrix4d sensor_to_desired_transform = Eigen::Matrix4d::Identity();
-        // sensor_to_desired_transform(0, 0) = -1.0;
-        // sensor_to_desired_transform(1, 1) = 1.0;
-        // sensor_to_desired_transform(2, 2) = -1.0;
+        // lidar_to_desired_transform.block<3,1>(0,3) << -0.0775, 0, -0.17;
+        // Use a switch statement to populate the matrix based on the preset.
+        Eigen::Matrix4d lidar_to_desired_transform = Eigen::Matrix4d::Identity(); // T desiredtrasnformed <- lidar
+        switch (transform_preset_) {
+            case LidarTransformPreset::BERLIN20250730:
+                // Use an identity matrix for no transformation. (T desiredtrasnformed <- lidar)
+                // Rotation part
+                lidar_to_desired_transform.block<3,3>(0,0) <<  -1, 0, 0,
+                                                                0, -1, 0,
+                                                                0,0,1;
+                // Translation part
+                lidar_to_desired_transform.block<3,1>(0,3) << -0.135, 0.0, -0.1243;
+                break;
 
-        // Define lidar_to_desired_transform with given rotation and translation
-        Eigen::Matrix4d lidar_to_desired_transform = Eigen::Matrix4d::Identity();
-        lidar_to_desired_transform.block<3,3>(0,0) <<  0.021814, -0.999762, 0,
-                                                        -0.999762, -0.021814, 0,
-                                                        0,         0,       -1;
+            case LidarTransformPreset::GEHLSDORF20250410:
+                // Use an identity matrix for no transformation. (T desiredtrasnformed <- lidar)
+                // Rotation part
+                lidar_to_desired_transform.block<3,3>(0,0) <<  0.021814, -0.999762, 0,
+                                                                -0.999762, -0.021814, 0,
+                                                                0,0,-1;
+                // Translation part
+                lidar_to_desired_transform.block<3,1>(0,3) << -0.0775, 0.0, -0.17;
+                break;
+            
+            default:
+                // It's good practice to have a default case that handles unknown values.
+                throw std::runtime_error("Unsupported LidarTransformPreset selected.");
+        }
 
-        lidar_to_desired_transform.block<3,1>(0,3) << -0.0775, 0, -0.17;
 
         for (int i = 0; i < pixels_per_column_; ++i) {
             double az_deg = azimuth_angles_json[i].get<double>();

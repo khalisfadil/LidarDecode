@@ -15,8 +15,14 @@ namespace lidarDecode {
 
     class OusterLidarCallback {
     public:
-        explicit OusterLidarCallback(const std::string& json_path);
-        explicit OusterLidarCallback(const nlohmann::json& json_data);
+        // This enum defines the available transformation options.
+        enum class LidarTransformPreset {
+            BERLIN20250730,
+            GEHLSDORF20250410
+        };
+
+        explicit OusterLidarCallback(const std::string& json_path, const LidarTransformPreset& T);
+        explicit OusterLidarCallback(const nlohmann::json& json_data, const LidarTransformPreset& T);
 
         void decode_packet_single_return(const std::vector<uint8_t>& packet, LidarDataFrame& frame);
         void decode_packet_legacy(const std::vector<uint8_t>& packet, LidarDataFrame& frame); 
@@ -25,6 +31,8 @@ namespace lidarDecode {
         const nlohmann::json& get_metadata() const { return metadata_; }
 
     private:
+        LidarTransformPreset transform_preset_ = LidarTransformPreset::BERLIN20250730;
+
         nlohmann::json metadata_;
 
         // Lookup tables: [m_id][c_id] for contiguous access per measurement
