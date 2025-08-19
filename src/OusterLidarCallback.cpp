@@ -28,48 +28,45 @@ namespace lidarDecode {
 
     // -----------------------------------------------------------------------------
 
-    OusterLidarCallback::OusterLidarCallback(const std::string& json_path, const LidarTransformPreset& T) 
-        :transform_preset_(T){
-
+    OusterLidarCallback::OusterLidarCallback(const std::string& json_path, const LidarTransformPreset& T, uint16_t N) 
+        : transform_preset_(T), channel_stride_(N) {
+        if (N == 0) {
+            throw std::runtime_error("Channel stride N must be positive");
+        }
+        if (N != 1 && N != 2 && N != 4 && N != 8 && N != 16) {
+            throw std::runtime_error("Channel stride N must be one of 1, 2, 4, 8, or 16, got " + std::to_string(N));
+        }
         std::ifstream file(json_path);
-        if (!file.is_open()) {throw std::runtime_error("Failed to open JSON file: " + json_path);}
+        if (!file.is_open()) {
+            throw std::runtime_error("Failed to open JSON file: " + json_path);
+        }
         json json_data;
-        try {file >> json_data;
-        } catch (const json::parse_error& e) {throw std::runtime_error("JSON parse error in " + json_path + ": " + e.what());}
-
+        try {
+            file >> json_data;
+        } catch (const json::parse_error& e) {
+            throw std::runtime_error("JSON parse error in " + json_path + ": " + e.what());
+        }
         parse_metadata(json_data);
+        if (N > static_cast<uint16_t>(pixels_per_column_)) {
+            throw std::runtime_error("Channel stride N (" + std::to_string(N) + ") exceeds pixels_per_column_ (" + std::to_string(pixels_per_column_) + ")");
+        }
         initialize();
-
-        // // Example
-        // // This file is essential as it contains all sensor-specific calibration
-        // // data, such as beam angles and intrinsics.
-        // std::string metadata_json_path = "path/to/your/ouster_metadata.json";
-
-        // // 2. Choose the desired transformation preset from the enum.
-        // // This corresponds to a specific, pre-configured extrinsic calibration
-        // // for a particular vehicle or setup. Given the current location is Rostock,
-        // // we'll select the Gehlsdorf preset.
-        // auto transform_preset = lidarDecode::OusterLidarCallback::LidarTransformPreset::GEHLSDORF20250410;
-
-        // try {
-        //     // 3. Construct the OusterLidarCallback object.
-        //     // The constructor reads and parses the JSON file, then calls the
-        //     // initialize() method to set up all necessary lookup tables based
-        //     // on the file's content and the chosen transformation preset.
-        //     lidarDecode::OusterLidarCallback lidar_decoder(metadata_json_path, transform_preset);
-
-        //     std::cout << "Successfully initialized OusterLidarCallback with '"
-        //             << metadata_json_path << "' and GEHLSDORF20250410 preset." << std::endl;
-        //     std::cout << "Ready to decode packets." << std::endl;
-        // }
     }
 
     // -----------------------------------------------------------------------------
 
-    OusterLidarCallback::OusterLidarCallback(const json& json_data, const LidarTransformPreset& T) 
-        :transform_preset_(T){
-
+    OusterLidarCallback::OusterLidarCallback(const json& json_data, const LidarTransformPreset& T, uint16_t N) 
+        : transform_preset_(T), channel_stride_(N) {
+        if (N == 0) {
+            throw std::runtime_error("Channel stride N must be positive");
+        }
+        if (N != 1 && N != 2 && N != 4 && N != 8 && N != 16) {
+            throw std::runtime_error("Channel stride N must be one of 1, 2, 4, 8, or 16, got " + std::to_string(N));
+        }
         parse_metadata(json_data);
+        if (N > static_cast<uint16_t>(pixels_per_column_)) {
+            throw std::runtime_error("Channel stride N (" + std::to_string(N) + ") exceeds pixels_per_column_ (" + std::to_string(pixels_per_column_) + ")");
+        }
         initialize();
     }
 
@@ -141,16 +138,15 @@ namespace lidarDecode {
     // -----------------------------------------------------------------------------
 
     void OusterLidarCallback::initialize() {
-
         if (udp_profile_lidar_ == "RNG19_RFL8_SIG16_NIR16") {
-            PACKET_HEADER_BYTES = 32;     // Assumed size of data before the first measurement block in the packet (bytes)
-            PACKET_FOOTER_BYTES = 32;     // Assumed size of data after the last measurement block
+            PACKET_HEADER_BYTES = 32;
+            PACKET_FOOTER_BYTES = 32;
             COLUMN_HEADER_BYTES = 12;
             CHANNEL_STRIDE_BYTES = 12;
             MEASUREMENT_BLOCK_STATUS_BYTES = 0;
         } else if (udp_profile_lidar_ == "LEGACY") {
-            PACKET_HEADER_BYTES = 0;     // Assumed size of data before the first measurement block in the packet (bytes)
-            PACKET_FOOTER_BYTES = 0;     // Assumed size of data after the last measurement block
+            PACKET_HEADER_BYTES = 0;
+            PACKET_FOOTER_BYTES = 0;
             COLUMN_HEADER_BYTES = 16;
             CHANNEL_STRIDE_BYTES = 12;
             MEASUREMENT_BLOCK_STATUS_BYTES = 4;
@@ -158,13 +154,6 @@ namespace lidarDecode {
             throw std::runtime_error("Unsupported udp_profile_lidar: " + udp_profile_lidar_);
         }
 
-        // Calculate block_size and expected_size
-        //single return:
-        // block size = 12 + (128 * 12) + 0 = 1548
-        // expected size = 32 + (16 * 1548) + 23 = 24823
-        //legacy:
-        // block size = 16 + (128 * 12) + 4 = 1556
-        // expected size = 0 + (16 * 1556) + 0 = 24896
         block_size_ = COLUMN_HEADER_BYTES + (pixels_per_column_ * CHANNEL_STRIDE_BYTES) + MEASUREMENT_BLOCK_STATUS_BYTES;
         expected_size_ = PACKET_HEADER_BYTES + (columns_per_packet_ * block_size_) + PACKET_FOOTER_BYTES;
 
@@ -177,54 +166,54 @@ namespace lidarDecode {
             throw std::runtime_error("Beam azimuth/altitude angles missing or wrong size in JSON.");
         }
 
+        // Calculate number of channels in subset
+        subset_channels_ = (pixels_per_column_ + channel_stride_ - 1) / channel_stride_; // Ceiling division
+
         // Reserve buffer space
         data_buffer1_.reserve(columns_per_frame_ * pixels_per_column_);
         data_buffer2_.reserve(columns_per_frame_ * pixels_per_column_);
 
+        // Initialize original lookup tables
         sin_beam_azimuths_.resize(pixels_per_column_);
         cos_beam_azimuths_.resize(pixels_per_column_);
         sin_beam_altitudes_.resize(pixels_per_column_);
         cos_beam_altitudes_.resize(pixels_per_column_);
-        r_min_.resize(pixels_per_column_, 5.0); // define r_min_ based on the size of the vehicle
-
-        // Initialize transposed lookup tables: [m_id][c_id]
+        r_min_.resize(pixels_per_column_, 5.0);
         x_1_.assign(columns_per_frame_, std::vector<double, Eigen::aligned_allocator<double>>(pixels_per_column_));
         y_1_.assign(columns_per_frame_, std::vector<double, Eigen::aligned_allocator<double>>(pixels_per_column_));
         z_1_.assign(columns_per_frame_, std::vector<double, Eigen::aligned_allocator<double>>(pixels_per_column_));
-        
         x_2_.resize(columns_per_frame_);
         y_2_.resize(columns_per_frame_);
         z_2_.resize(columns_per_frame_);
+        pixel_shifts_.resize(pixels_per_column_);
 
-        // lidar_to_desired_transform.block<3,1>(0,3) << -0.0775, 0, -0.17;
-        // Use a switch statement to populate the matrix based on the preset.
-        Eigen::Matrix4d lidar_to_desired_transform = Eigen::Matrix4d::Identity(); // T desiredtrasnformed <- lidar
+        // Initialize subset lookup tables
+        sin_beam_azimuths_subset_.resize(subset_channels_);
+        cos_beam_azimuths_subset_.resize(subset_channels_);
+        sin_beam_altitudes_subset_.resize(subset_channels_);
+        cos_beam_altitudes_subset_.resize(subset_channels_);
+        r_min_subset_.resize(subset_channels_, 5.0);
+        x_1_subset_.assign(columns_per_frame_, std::vector<double, Eigen::aligned_allocator<double>>(subset_channels_));
+        y_1_subset_.assign(columns_per_frame_, std::vector<double, Eigen::aligned_allocator<double>>(subset_channels_));
+        z_1_subset_.assign(columns_per_frame_, std::vector<double, Eigen::aligned_allocator<double>>(subset_channels_));
+        pixel_shifts_subset_.resize(subset_channels_);
+        subset_c_ids_.resize(subset_channels_);
+
+        Eigen::Matrix4d lidar_to_desired_transform = Eigen::Matrix4d::Identity();
         switch (transform_preset_) {
             case LidarTransformPreset::BERLIN20250730:
-                // Use an identity matrix for no transformation. (T desiredtrasnformed <- lidar)
-                // Rotation part
-                lidar_to_desired_transform.block<3,3>(0,0) <<  -1, 0, 0,
-                                                                0, -1, 0,
-                                                                0,0,1;
-                // Translation part
+                lidar_to_desired_transform.block<3,3>(0,0) << -1, 0, 0, 0, -1, 0, 0, 0, 1;
                 lidar_to_desired_transform.block<3,1>(0,3) << -0.135, 0.0, -0.1243;
                 break;
-
             case LidarTransformPreset::GEHLSDORF20250410:
-                // Use an identity matrix for no transformation. (T desiredtrasnformed <- lidar)
-                // Rotation part
-                lidar_to_desired_transform.block<3,3>(0,0) <<  0.021814, -0.999762, 0,
-                                                                -0.999762, -0.021814, 0,
-                                                                0,0,-1;
-                // Translation part
+                lidar_to_desired_transform.block<3,3>(0,0) << 0.021814, -0.999762, 0, -0.999762, -0.021814, 0, 0, 0, -1;
                 lidar_to_desired_transform.block<3,1>(0,3) << -0.0775, 0.0, -0.17;
                 break;
-            
             default:
-                // It's good practice to have a default case that handles unknown values.
                 throw std::runtime_error("Unsupported LidarTransformPreset selected.");
         }
 
+        // Populate original and subset lookup tables
         for (int i = 0; i < pixels_per_column_; ++i) {
             double az_deg = azimuth_angles_json[i].get<double>();
             double alt_deg = altitude_angles_json[i].get<double>();
@@ -234,6 +223,19 @@ namespace lidarDecode {
             cos_beam_azimuths_[i] = std::cos(az_rad);
             sin_beam_altitudes_[i] = std::sin(alt_rad);
             cos_beam_altitudes_[i] = std::cos(alt_rad);
+            pixel_shifts_[i] = metadata_["lidar_data_format"]["pixel_shift_by_row"][i].get<int>();
+
+            // Populate subset tables if i is a multiple of channel_stride_
+            if (i % channel_stride_ == 0) {
+                size_t subset_idx = i / channel_stride_;
+                sin_beam_azimuths_subset_[subset_idx] = sin_beam_azimuths_[i];
+                cos_beam_azimuths_subset_[subset_idx] = cos_beam_azimuths_[i];
+                sin_beam_altitudes_subset_[subset_idx] = sin_beam_altitudes_[i];
+                cos_beam_altitudes_subset_[subset_idx] = cos_beam_altitudes_[i];
+                r_min_subset_[subset_idx] = r_min_[i];
+                pixel_shifts_subset_[subset_idx] = pixel_shifts_[i];
+                subset_c_ids_[subset_idx] = i;
+            }
         }
 
         for (int m_id = 0; m_id < columns_per_frame_; ++m_id) {
@@ -255,23 +257,24 @@ namespace lidarDecode {
             for (int ch = 0; ch < pixels_per_column_; ++ch) {
                 double beam_az_rad = azimuth_angles_json[ch].get<double>() * M_PI / 180.0;
                 double total_az_rad = measurement_azimuth_rad + beam_az_rad;
-                
                 double cos_total_az = std::cos(total_az_rad);
                 double sin_total_az = std::sin(total_az_rad);
-                
                 double cos_alt = cos_beam_altitudes_[ch];
                 double sin_alt = sin_beam_altitudes_[ch];
 
-                Eigen::Vector4d dir_lidar_frame(
-                    cos_alt * cos_total_az,
-                    cos_alt * sin_total_az,
-                    sin_alt,
-                    0.0);
-
+                Eigen::Vector4d dir_lidar_frame(cos_alt * cos_total_az, cos_alt * sin_total_az, sin_alt, 0.0);
                 Eigen::Vector4d dir_transformed = lidar_to_desired_transform * dir_lidar_frame;
                 x_1_[m_id][ch] = dir_transformed.x();
                 y_1_[m_id][ch] = dir_transformed.y();
                 z_1_[m_id][ch] = dir_transformed.z();
+
+                // Populate subset tables if ch is a multiple of channel_stride_
+                if (ch % channel_stride_ == 0) {
+                    size_t subset_idx = ch / channel_stride_;
+                    x_1_subset_[m_id][subset_idx] = x_1_[m_id][ch];
+                    y_1_subset_[m_id][subset_idx] = y_1_[m_id][ch];
+                    z_1_subset_[m_id][subset_idx] = z_1_[m_id][ch];
+                }
             }
         }
 
@@ -279,16 +282,25 @@ namespace lidarDecode {
         if (x_1_.size() != static_cast<size_t>(columns_per_frame_) || (!x_1_.empty() && x_1_[0].size() != static_cast<size_t>(pixels_per_column_))) {
             throw std::runtime_error("x_1_ lookup table size mismatch after initialization");
         }
+        if (x_1_subset_.size() != static_cast<size_t>(columns_per_frame_) || (!x_1_subset_.empty() && x_1_subset_[0].size() != static_cast<size_t>(subset_channels_))) {
+            throw std::runtime_error("x_1_subset_ lookup table size mismatch after initialization");
+        }
         if (x_2_.size() != static_cast<size_t>(columns_per_frame_)) {
             throw std::runtime_error("x_2_ lookup table size mismatch after initialization");
         }
         if (pixel_shifts_.size() != static_cast<size_t>(pixels_per_column_)) {
             throw std::runtime_error("pixel_shifts_ size mismatch after initialization");
         }
+        if (pixel_shifts_subset_.size() != static_cast<size_t>(subset_channels_)) {
+            throw std::runtime_error("pixel_shifts_subset_ size mismatch after initialization");
+        }
 
 #ifdef DEBUG
         if (!x_1_.empty() && !x_1_[0].empty()) {
             assert(reinterpret_cast<uintptr_t>(x_1_[0].data()) % 32 == 0 && "x_1_[0].data() not 32-byte aligned!");
+        }
+        if (!x_1_subset_.empty() && !x_1_subset_[0].empty()) {
+            assert(reinterpret_cast<uintptr_t>(x_1_subset_[0].data()) % 32 == 0 && "x_1_subset_[0].data() not 32-byte aligned!");
         }
 #endif
     }
@@ -304,256 +316,14 @@ namespace lidarDecode {
         uint16_t packet_type_raw;
         std::memcpy(&packet_type_raw, packet.data(), sizeof(uint16_t));
         uint16_t packet_type = le16toh(packet_type_raw);
-        if (packet_type != 0x0001) { // Check against Ouster's Lidar Packet type (0x0001 for OS-series)
+        if (packet_type != 0x0001) {
             std::cerr << "Invalid packet type: 0x" << std::hex << packet_type << std::dec << " (expected 0x1)" << std::endl;
             return;
         }
 
         uint16_t current_packet_frame_id_raw;
-        std::memcpy(&current_packet_frame_id_raw, packet.data() + 2, sizeof(uint16_t)); // frame_id is at offset 2
+        std::memcpy(&current_packet_frame_id_raw, packet.data() + 2, sizeof(uint16_t));
         uint16_t current_packet_frame_id = le16toh(current_packet_frame_id_raw);
-
-        LidarDataFrame* p_current_write_buffer;
-        if (buffer_toggle_) { // true: data_buffer1_ is read, data_buffer2_ is write
-            p_current_write_buffer = &data_buffer2_;
-        } else { // false: data_buffer2_ is read, data_buffer1_ is write
-            p_current_write_buffer = &data_buffer1_;
-        }
-
-        double prev_frame_completed_latest_ts = 0.0;
-
-        if (current_packet_frame_id != this->frame_id_) {
-            // Frame transition detected. The frame in p_current_write_buffer is now complete.
-            if (this->frame_id_ != 0 || this->number_points_ > 0) { // Avoid operations for uninitialized/empty first "previous" frame
-                p_current_write_buffer->numberpoints = this->number_points_; // p_current_write_buffer->timestamp and ->frame_id were set by the first point of that frame.
-                p_current_write_buffer->timestamp_end = this->latest_timestamp_s; // the end of timestamp of current frame
-            }
-            
-            prev_frame_completed_latest_ts = this->latest_timestamp_s; // Timestamp of the last point of the frame that just completed.
-
-            swap_buffers(); // Flips buffer_toggle_. Roles of data_buffer1_ and data_buffer2_ are swapped.
-
-            // Update p_current_write_buffer to point to the NEW write buffer.
-            if (buffer_toggle_) {
-                p_current_write_buffer = &data_buffer2_;
-            } else {
-                p_current_write_buffer = &data_buffer1_;
-            }
-
-            this->number_points_ = 0; // Reset point count for the new frame.
-            this->frame_id_ = current_packet_frame_id; // Update the class's current frame_id tracker.
-
-            p_current_write_buffer->clear();
-            p_current_write_buffer->reserve(columns_per_frame_ * pixels_per_column_);
-        }
-
-        bool is_first_point_of_current_frame = (this->number_points_ == 0);
-
-        for (int col = 0; col < columns_per_packet_; ++col) {
-            size_t block_offset = PACKET_HEADER_BYTES + col * block_size_; // header_size_ is offset to first block from packet start
-
-            uint64_t timestamp_ns_raw;
-            std::memcpy(&timestamp_ns_raw, packet.data() + block_offset, sizeof(uint64_t));
-            uint64_t timestamp_ns = le64toh(timestamp_ns_raw);
-            double current_col_timestamp_s = static_cast<double>(timestamp_ns) * 1e-9;
-            
-            if (current_col_timestamp_s < 0) {
-                std::cerr << "Negative column timestamp: " << current_col_timestamp_s << std::endl;
-                continue;
-            }
-            this->latest_timestamp_s = current_col_timestamp_s; // Update class member with latest processed timestamp
-
-            uint16_t m_id_raw;
-            std::memcpy(&m_id_raw, packet.data() + block_offset + 8, sizeof(uint16_t)); // Measurement ID is at offset 8 in column block
-            uint16_t m_id = le16toh(m_id_raw);
-
-            if (m_id >= static_cast<uint16_t>(columns_per_frame_)) {
-                std::cerr << "Invalid measurement ID: " << m_id << " (>= " << columns_per_frame_ << ")" << std::endl;
-                continue;
-            }
-
-            // Column status is at offset 10 in column block. Bit 0 indicates valid data.
-            uint8_t column_status;
-            std::memcpy(&column_status, packet.data() + block_offset + 10, sizeof(uint8_t));
-            if (!(column_status & 0x01)) { // Check if measurement block is valid
-                continue;
-            }
-
-    #ifdef __AVX2__
-            for (uint16_t c_id_base = 0; c_id_base < static_cast<uint16_t>(pixels_per_column_); c_id_base += 4) {
-                // Offset to first pixel data in column block is 12 bytes (ts 8B, m_id 2B, status 1B, encoder 2B -> total 12B before pixels)
-                size_t first_pixel_in_block_offset = block_offset + 12; 
-                // size_t pixel_group_offset = first_pixel_in_block_offset + c_id_base * 12; // 12 bytes per pixel data
-
-                alignas(32) double range_m[4];
-                alignas(32) double r_min_vals[4];
-                uint16_t c_ids[4];
-                uint8_t reflectivity[4]; // Reflectivity is uint8_t
-                uint16_t signal[4], nir[4];
-
-                for (int i = 0; i < 4; ++i) {
-                    uint16_t current_c_id = c_id_base + i;
-                    if (current_c_id >= static_cast<uint16_t>(pixels_per_column_)) {
-                        range_m[i] = 0.0; // Mark as invalid if past actual pixels_per_column
-                        r_min_vals[i] = 1.0; // Ensure it fails range_m < r_min_vals if range_m is 0
-                        continue;
-                    }
-                    
-                    size_t pixel_data_offset = first_pixel_in_block_offset + current_c_id * 12;
-                    if (pixel_data_offset + 11 >= packet.size()) { // Check bounds for reading up to 12 bytes
-                        range_m[i] = 0.0; r_min_vals[i] = 1.0; continue;
-                    }
-
-                    uint32_t range_mm_raw;
-                    // Ouster range is 3 bytes, then 1 byte reflectivity. Read 3 bytes into lower part of uint32_t.
-                    uint8_t range_bytes[4] = {packet[pixel_data_offset], packet[pixel_data_offset + 1], packet[pixel_data_offset + 2], 0};
-                    std::memcpy(&range_mm_raw, range_bytes, sizeof(uint32_t));
-                    uint32_t range_mm = le32toh(range_mm_raw) & 0x0007FFFF; // Ouster new format range is 19 bits for REV06+
-                                                                        // User mentioned "not legacy format", older non-legacy could be 0x0007FFFF (19 bits)
-                    range_m[i] = static_cast<double>(range_mm) * 0.001; // mm to m
-                    r_min_vals[i] = r_min_[current_c_id];
-                    c_ids[i] = current_c_id;
-
-                    std::memcpy(&reflectivity[i], packet.data() + pixel_data_offset + 4, sizeof(uint8_t)); // Reflectivity (1B)
-                    uint16_t signal_raw, nir_raw;
-                    std::memcpy(&signal_raw, packet.data() + pixel_data_offset + 6, sizeof(uint16_t)); // Signal (2B)
-                    std::memcpy(&nir_raw, packet.data() + pixel_data_offset + 8, sizeof(uint16_t));   // NIR (2B)
-                    signal[i] = le16toh(signal_raw);
-                    nir[i] = le16toh(nir_raw);
-                }
-
-                __m256d m256d_range = _mm256_load_pd(range_m);
-                __m256d m256d_r_min_vec = _mm256_load_pd(r_min_vals);
-                // Valid points are those where range_m >= r_min_val
-                __m256d valid_mask = _mm256_cmp_pd(m256d_range, m256d_r_min_vec, _CMP_GE_OQ);
-
-                __m256d x1_vec = _mm256_load_pd(x_1_[m_id].data() + c_id_base);
-                __m256d y1_vec = _mm256_load_pd(y_1_[m_id].data() + c_id_base);
-                __m256d z1_vec = _mm256_load_pd(z_1_[m_id].data() + c_id_base);
-                __m256d x2_val = _mm256_set1_pd(x_2_[m_id]);
-                __m256d y2_val = _mm256_set1_pd(y_2_[m_id]);
-                __m256d z2_val = _mm256_set1_pd(z_2_[m_id]);
-
-                __m256d pt_x = _mm256_fmadd_pd(m256d_range, x1_vec, x2_val);
-                __m256d pt_y = _mm256_fmadd_pd(m256d_range, y1_vec, y2_val);
-                __m256d pt_z = _mm256_fmadd_pd(m256d_range, z1_vec, z2_val);
-
-                alignas(32) double pt_x_arr[4], pt_y_arr[4], pt_z_arr[4];
-                _mm256_store_pd(pt_x_arr, pt_x);
-                _mm256_store_pd(pt_y_arr, pt_y);
-                _mm256_store_pd(pt_z_arr, pt_z);
-                
-                alignas(32) double valid_mask_arr[4]; // Store mask to check elements
-                _mm256_store_pd(valid_mask_arr, valid_mask);
-
-                double relative_timestamp_s = (p_current_write_buffer->numberpoints > 0 || this->number_points_ > 0) && p_current_write_buffer->timestamp > 0
-                    ? std::max(0.0, current_col_timestamp_s - p_current_write_buffer->timestamp)
-                    : 0.0;
-
-                for (int i = 0; i < 4; ++i) {
-                    uint16_t current_c_id = c_id_base + i;
-                    if (current_c_id >= static_cast<uint16_t>(pixels_per_column_)) break; // Processed all valid pixels for this group
-
-                    // Check if the point is valid based on the AVX comparison (mask will be all 1s (NaN) for true, 0 for false)
-                    // and also the original range check (in case AVX was skipped due to boundary conditions)
-                    if (range_m[i] >= r_min_vals[i] && range_m[i] > 0) { // Double check scalar condition
-                        p_current_write_buffer->x.push_back(pt_x_arr[i]);
-                        p_current_write_buffer->y.push_back(pt_y_arr[i]);
-                        p_current_write_buffer->z.push_back(pt_z_arr[i]);
-                        p_current_write_buffer->c_id.push_back(c_ids[i]);
-                        p_current_write_buffer->m_id.push_back(m_id);
-                        p_current_write_buffer->timestamp_points.push_back(current_col_timestamp_s);
-                        p_current_write_buffer->relative_timestamp.push_back(relative_timestamp_s);
-                        p_current_write_buffer->reflectivity.push_back(reflectivity[i]);
-                        p_current_write_buffer->signal.push_back(signal[i]);
-                        p_current_write_buffer->nir.push_back(nir[i]);
-                        
-                        this->number_points_++;
-                        if (is_first_point_of_current_frame) {
-                            p_current_write_buffer->timestamp = current_col_timestamp_s;
-                            p_current_write_buffer->frame_id = this->frame_id_;
-                            p_current_write_buffer->interframe_timedelta = (prev_frame_completed_latest_ts > 0.0)
-                                ? std::max(0.0, current_col_timestamp_s - prev_frame_completed_latest_ts) : 0.0;
-                            is_first_point_of_current_frame = false;
-                        }
-                    }
-                }
-            }
-    #else // Scalar fallback
-            size_t first_pixel_in_block_offset = block_offset + 12;
-            for (uint16_t c_id = 0; c_id < static_cast<uint16_t>(pixels_per_column_); ++c_id) {
-                size_t pixel_data_offset = first_pixel_in_block_offset + c_id * 12;
-                if (pixel_data_offset + 11 >= packet.size()) { // Check bounds for reading up to 12 bytes
-                    // std::cerr << "Pixel offset out of bounds\n"; // Can be noisy
-                    continue;
-                }
-
-                uint32_t range_mm_raw;
-                uint8_t range_bytes[4] = {packet[pixel_data_offset], packet[pixel_data_offset + 1], packet[pixel_data_offset + 2], 0};
-                std::memcpy(&range_mm_raw, range_bytes, sizeof(uint32_t));
-                uint32_t range_mm = le32toh(range_mm_raw) & 0x0007FFFF; // 19-bit range
-                double range_m = static_cast<double>(range_mm) * 0.001;
-
-                if (range_m < r_min_[c_id] || range_m == 0) { // Skip if below min range or zero
-                    continue;
-                }
-
-                uint8_t current_reflectivity;
-                std::memcpy(&current_reflectivity, packet.data() + pixel_data_offset + 4, sizeof(uint8_t));
-                uint16_t signal_raw, nir_raw;
-                std::memcpy(&signal_raw, packet.data() + pixel_data_offset + 6, sizeof(uint16_t));
-                std::memcpy(&nir_raw, packet.data() + pixel_data_offset + 8, sizeof(uint16_t));
-                uint16_t current_signal = le16toh(signal_raw);
-                uint16_t current_nir = le16toh(nir_raw);
-
-                double pt_x = range_m * x_1_[m_id][c_id] + x_2_[m_id];
-                double pt_y = range_m * y_1_[m_id][c_id] + y_2_[m_id];
-                double pt_z = range_m * z_1_[m_id][c_id] + z_2_[m_id];
-
-                double relative_timestamp_s = (p_current_write_buffer->numberpoints > 0 || this->number_points_ > 0) && p_current_write_buffer->timestamp > 0
-                    ? std::max(0.0, current_col_timestamp_s - p_current_write_buffer->timestamp)
-                    : 0.0;
-
-                p_current_write_buffer->x.push_back(pt_x);
-                p_current_write_buffer->y.push_back(pt_y);
-                p_current_write_buffer->z.push_back(pt_z);
-                p_current_write_buffer->c_id.push_back(c_id);
-                p_current_write_buffer->m_id.push_back(m_id);
-                p_current_write_buffer->timestamp_points.push_back(current_col_timestamp_s);
-                p_current_write_buffer->relative_timestamp.push_back(relative_timestamp_s);
-                p_current_write_buffer->reflectivity.push_back(current_reflectivity);
-                p_current_write_buffer->signal.push_back(current_signal);
-                p_current_write_buffer->nir.push_back(current_nir);
-                
-                this->number_points_++;
-                if (is_first_point_of_current_frame) {
-                    p_current_write_buffer->timestamp = current_col_timestamp_s;
-                    p_current_write_buffer->frame_id = this->frame_id_;
-                    p_current_write_buffer->interframe_timedelta = (prev_frame_completed_latest_ts > 0.0)
-                        ? std::max(0.0, current_col_timestamp_s - prev_frame_completed_latest_ts) : 0.0;
-                    is_first_point_of_current_frame = false;
-                }
-            }
-    #endif
-        } // End of column loop
-
-        // Update number of points for the buffer currently being written to,
-        // reflecting points added from this packet.
-        if (p_current_write_buffer) { // Should always be true here
-            p_current_write_buffer->numberpoints = this->number_points_;
-        }
-        
-        // Assign the current "read" buffer (which holds the last completed frame) to the output parameter.
-        frame = get_latest_lidar_frame();
-    }
-
-    // -----------------------------------------------------------------------------
-
-    void OusterLidarCallback::decode_packet_legacy(const std::vector<uint8_t>& packet, LidarDataFrame& frame) {
-        if (packet.size() != expected_size_) {
-            std::cerr << "Invalid packet size: " << packet.size() << ", expected: " << expected_size_ << std::endl;
-            return;
-        }
 
         LidarDataFrame* p_current_write_buffer;
         if (buffer_toggle_) {
@@ -564,19 +334,40 @@ namespace lidarDecode {
 
         double prev_frame_completed_latest_ts = 0.0;
 
+        if (current_packet_frame_id != this->frame_id_) {
+            if (this->frame_id_ != 0 || this->number_points_ > 0) {
+                p_current_write_buffer->numberpoints = this->number_points_;
+                p_current_write_buffer->timestamp_end = this->latest_timestamp_s;
+            }
+            prev_frame_completed_latest_ts = this->latest_timestamp_s;
+            swap_buffers();
+            if (buffer_toggle_) {
+                p_current_write_buffer = &data_buffer2_;
+            } else {
+                p_current_write_buffer = &data_buffer1_;
+            }
+            this->number_points_ = 0;
+            this->frame_id_ = current_packet_frame_id;
+            p_current_write_buffer->clear();
+            p_current_write_buffer->reserve(columns_per_frame_ * pixels_per_column_);
+        }
+
+        bool is_first_point_of_current_frame = (this->number_points_ == 0);
+
         for (int col = 0; col < columns_per_packet_; ++col) {
-            size_t block_offset = col * block_size_; // PACKET_HEADER_BYTES in legacy format is set to 0
+            size_t block_offset = PACKET_HEADER_BYTES + col * block_size_;
 
             uint64_t timestamp_ns_raw;
             std::memcpy(&timestamp_ns_raw, packet.data() + block_offset, sizeof(uint64_t));
             uint64_t timestamp_ns = le64toh(timestamp_ns_raw);
             double current_col_timestamp_s = static_cast<double>(timestamp_ns) * 1e-9;
-
+            
             if (current_col_timestamp_s < 0) {
                 std::cerr << "Negative column timestamp: " << current_col_timestamp_s << std::endl;
                 continue;
             }
-            
+            this->latest_timestamp_s = current_col_timestamp_s;
+
             uint16_t m_id_raw;
             std::memcpy(&m_id_raw, packet.data() + block_offset + 8, sizeof(uint16_t));
             uint16_t m_id = le16toh(m_id_raw);
@@ -586,49 +377,15 @@ namespace lidarDecode {
                 continue;
             }
 
-            uint16_t current_packet_frame_id_raw;
-            std::memcpy(&current_packet_frame_id_raw, packet.data() + block_offset + 10, sizeof(uint16_t));
-            uint16_t current_packet_frame_id = le16toh(current_packet_frame_id_raw);
-
-            if (current_packet_frame_id != this->frame_id_) {
-                if (this->frame_id_ != 0 || this->number_points_ > 0) {
-                    p_current_write_buffer->numberpoints = this->number_points_;
-                    p_current_write_buffer->timestamp_end = this->latest_timestamp_s; // the end of timestamp of current frame
-                }
-
-                prev_frame_completed_latest_ts = this->latest_timestamp_s;
-                swap_buffers();
-
-                if (buffer_toggle_) {
-                    p_current_write_buffer = &data_buffer2_;
-                } else {
-                    p_current_write_buffer = &data_buffer1_;
-                }
-
-                this->number_points_ = 0;
-                this->frame_id_ = current_packet_frame_id;
-
-                p_current_write_buffer->clear();
-                p_current_write_buffer->reserve(columns_per_frame_ * pixels_per_column_);
-            }
-
-            this->latest_timestamp_s = current_col_timestamp_s; // Update class member with latest received timestamp
-
-            // Measurement block status is after header (16 bytes) and channel data (pixels_per_column_ * 12 bytes)
-            uint32_t block_status;
-            size_t status_offset = block_offset + 16 + (pixels_per_column_ * 12);
-            std::memcpy(&block_status, packet.data() + status_offset, sizeof(uint32_t));
-            block_status = le32toh(block_status);
-            if (block_status != 0xFFFFFFFF) {
+            uint8_t column_status;
+            std::memcpy(&column_status, packet.data() + block_offset + 10, sizeof(uint8_t));
+            if (!(column_status & 0x01)) {
                 continue;
             }
 
-            bool is_first_point_of_current_frame = (this->number_points_ == 0);
-
     #ifdef __AVX2__
-            for (uint16_t c_id_base = 0; c_id_base < static_cast<uint16_t>(pixels_per_column_); c_id_base += 4) {
-                size_t first_pixel_in_block_offset = block_offset + 16;
-                // size_t pixel_group_offset = first_pixel_in_block_offset + c_id_base * 12;
+            for (uint16_t subset_idx_base = 0; subset_idx_base < static_cast<uint16_t>(subset_channels_); subset_idx_base += 4) {
+                size_t first_pixel_in_block_offset = block_offset + 12;
 
                 alignas(32) double range_m[4];
                 alignas(32) double r_min_vals[4];
@@ -637,25 +394,29 @@ namespace lidarDecode {
                 uint16_t signal[4], nir[4];
 
                 for (int i = 0; i < 4; ++i) {
-                    uint16_t current_c_id = c_id_base + i;
-                    if (current_c_id >= static_cast<uint16_t>(pixels_per_column_)) {
+                    uint16_t subset_idx = subset_idx_base + i;
+                    if (subset_idx >= static_cast<uint16_t>(subset_channels_)) {
                         range_m[i] = 0.0;
                         r_min_vals[i] = 1.0;
+                        c_ids[i] = 0;
                         continue;
                     }
 
+                    uint16_t current_c_id = subset_c_ids_[subset_idx];
                     size_t pixel_data_offset = first_pixel_in_block_offset + current_c_id * 12;
                     if (pixel_data_offset + 11 >= packet.size()) {
                         range_m[i] = 0.0;
                         r_min_vals[i] = 1.0;
+                        c_ids[i] = 0;
                         continue;
                     }
 
                     uint32_t range_mm_raw;
-                    std::memcpy(&range_mm_raw, packet.data() + pixel_data_offset, sizeof(uint32_t));
-                    uint32_t range_mm = le32toh(range_mm_raw) & 0x000FFFFF; // 20-bit range
+                    uint8_t range_bytes[4] = {packet[pixel_data_offset], packet[pixel_data_offset + 1], packet[pixel_data_offset + 2], 0};
+                    std::memcpy(&range_mm_raw, range_bytes, sizeof(uint32_t));
+                    uint32_t range_mm = le32toh(range_mm_raw) & 0x0007FFFF;
                     range_m[i] = static_cast<double>(range_mm) * 0.001;
-                    r_min_vals[i] = r_min_[current_c_id];
+                    r_min_vals[i] = r_min_subset_[subset_idx];
                     c_ids[i] = current_c_id;
 
                     std::memcpy(&reflectivity[i], packet.data() + pixel_data_offset + 4, sizeof(uint8_t));
@@ -670,9 +431,9 @@ namespace lidarDecode {
                 __m256d m256d_r_min_vec = _mm256_load_pd(r_min_vals);
                 __m256d valid_mask = _mm256_cmp_pd(m256d_range, m256d_r_min_vec, _CMP_GE_OQ);
 
-                __m256d x1_vec = _mm256_load_pd(x_1_[m_id].data() + c_id_base);
-                __m256d y1_vec = _mm256_load_pd(y_1_[m_id].data() + c_id_base);
-                __m256d z1_vec = _mm256_load_pd(z_1_[m_id].data() + c_id_base);
+                __m256d x1_vec = _mm256_load_pd(x_1_subset_[m_id].data() + subset_idx_base);
+                __m256d y1_vec = _mm256_load_pd(y_1_subset_[m_id].data() + subset_idx_base);
+                __m256d z1_vec = _mm256_load_pd(z_1_subset_[m_id].data() + subset_idx_base);
                 __m256d x2_val = _mm256_set1_pd(x_2_[m_id]);
                 __m256d y2_val = _mm256_set1_pd(y_2_[m_id]);
                 __m256d z2_val = _mm256_set1_pd(z_2_[m_id]);
@@ -694,9 +455,8 @@ namespace lidarDecode {
                     : 0.0;
 
                 for (int i = 0; i < 4; ++i) {
-                    uint16_t current_c_id = c_id_base + i;
-                    if (current_c_id >= static_cast<uint16_t>(pixels_per_column_)) break;
-
+                    uint16_t subset_idx = subset_idx_base + i;
+                    if (subset_idx >= static_cast<uint16_t>(subset_channels_)) break;
                     if (range_m[i] >= r_min_vals[i] && range_m[i] > 0) {
                         p_current_write_buffer->x.push_back(pt_x_arr[i]);
                         p_current_write_buffer->y.push_back(pt_y_arr[i]);
@@ -721,16 +481,18 @@ namespace lidarDecode {
                 }
             }
     #else
-            size_t first_pixel_in_block_offset = block_offset + 16;
-            for (uint16_t c_id = 0; c_id < static_cast<uint16_t>(pixels_per_column_); ++c_id) {
+            // Scalar fallback remains unchanged, using original tables
+            size_t first_pixel_in_block_offset = block_offset + 12;
+            for (uint16_t c_id = 0; c_id < static_cast<uint16_t>(pixels_per_column_); c_id += channel_stride_) {
                 size_t pixel_data_offset = first_pixel_in_block_offset + c_id * 12;
                 if (pixel_data_offset + 11 >= packet.size()) {
                     continue;
                 }
 
                 uint32_t range_mm_raw;
-                std::memcpy(&range_mm_raw, packet.data() + pixel_data_offset, sizeof(uint32_t));
-                uint32_t range_mm = le32toh(range_mm_raw) & 0x000FFFFF; // 20-bit range
+                uint8_t range_bytes[4] = {packet[pixel_data_offset], packet[pixel_data_offset + 1], packet[pixel_data_offset + 2], 0};
+                std::memcpy(&range_mm_raw, range_bytes, sizeof(uint32_t));
+                uint32_t range_mm = le32toh(range_mm_raw) & 0x0007FFFF;
                 double range_m = static_cast<double>(range_mm) * 0.001;
 
                 if (range_m < r_min_[c_id] || range_m == 0) {
@@ -779,7 +541,237 @@ namespace lidarDecode {
         if (p_current_write_buffer) {
             p_current_write_buffer->numberpoints = this->number_points_;
         }
+        frame = get_latest_lidar_frame();
+    }
 
+    // -----------------------------------------------------------------------------
+    void OusterLidarCallback::decode_packet_legacy(const std::vector<uint8_t>& packet, LidarDataFrame& frame) {
+        if (packet.size() != expected_size_) {
+            std::cerr << "Invalid packet size: " << packet.size() << ", expected: " << expected_size_ << std::endl;
+            return;
+        }
+
+        LidarDataFrame* p_current_write_buffer;
+        if (buffer_toggle_) {
+            p_current_write_buffer = &data_buffer2_;
+        } else {
+            p_current_write_buffer = &data_buffer1_;
+        }
+
+        double prev_frame_completed_latest_ts = 0.0;
+
+        for (int col = 0; col < columns_per_packet_; ++col) {
+            size_t block_offset = col * block_size_;
+
+            uint64_t timestamp_ns_raw;
+            std::memcpy(&timestamp_ns_raw, packet.data() + block_offset, sizeof(uint64_t));
+            uint64_t timestamp_ns = le64toh(timestamp_ns_raw);
+            double current_col_timestamp_s = static_cast<double>(timestamp_ns) * 1e-9;
+
+            if (current_col_timestamp_s < 0) {
+                std::cerr << "Negative column timestamp: " << current_col_timestamp_s << std::endl;
+                continue;
+            }
+
+            uint16_t m_id_raw;
+            std::memcpy(&m_id_raw, packet.data() + block_offset + 8, sizeof(uint16_t));
+            uint16_t m_id = le16toh(m_id_raw);
+
+            if (m_id >= static_cast<uint16_t>(columns_per_frame_)) {
+                std::cerr << "Invalid measurement ID: " << m_id << " (>= " << columns_per_frame_ << ")" << std::endl;
+                continue;
+            }
+
+            uint16_t current_packet_frame_id_raw;
+            std::memcpy(&current_packet_frame_id_raw, packet.data() + block_offset + 10, sizeof(uint16_t));
+            uint16_t current_packet_frame_id = le16toh(current_packet_frame_id_raw);
+
+            if (current_packet_frame_id != this->frame_id_) {
+                if (this->frame_id_ != 0 || this->number_points_ > 0) {
+                    p_current_write_buffer->numberpoints = this->number_points_;
+                    p_current_write_buffer->timestamp_end = this->latest_timestamp_s;
+                }
+                prev_frame_completed_latest_ts = this->latest_timestamp_s;
+                swap_buffers();
+                if (buffer_toggle_) {
+                    p_current_write_buffer = &data_buffer2_;
+                } else {
+                    p_current_write_buffer = &data_buffer1_;
+                }
+                this->number_points_ = 0;
+                this->frame_id_ = current_packet_frame_id;
+                p_current_write_buffer->clear();
+                p_current_write_buffer->reserve(columns_per_frame_ * pixels_per_column_);
+            }
+
+            this->latest_timestamp_s = current_col_timestamp_s;
+
+            uint32_t block_status;
+            size_t status_offset = block_offset + 16 + (pixels_per_column_ * 12);
+            std::memcpy(&block_status, packet.data() + status_offset, sizeof(uint32_t));
+            block_status = le32toh(block_status);
+            if (block_status != 0xFFFFFFFF) {
+                continue;
+            }
+
+            bool is_first_point_of_current_frame = (this->number_points_ == 0);
+
+    #ifdef __AVX2__
+            for (uint16_t subset_idx_base = 0; subset_idx_base < static_cast<uint16_t>(subset_channels_); subset_idx_base += 4) {
+                size_t first_pixel_in_block_offset = block_offset + 16;
+
+                alignas(32) double range_m[4];
+                alignas(32) double r_min_vals[4];
+                uint16_t c_ids[4];
+                uint8_t reflectivity[4];
+                uint16_t signal[4], nir[4];
+
+                for (int i = 0; i < 4; ++i) {
+                    uint16_t subset_idx = subset_idx_base + i;
+                    if (subset_idx >= static_cast<uint16_t>(subset_channels_)) {
+                        range_m[i] = 0.0;
+                        r_min_vals[i] = 1.0;
+                        c_ids[i] = 0;
+                        continue;
+                    }
+
+                    uint16_t current_c_id = subset_c_ids_[subset_idx];
+                    size_t pixel_data_offset = first_pixel_in_block_offset + current_c_id * 12;
+                    if (pixel_data_offset + 11 >= packet.size()) {
+                        range_m[i] = 0.0;
+                        r_min_vals[i] = 1.0;
+                        c_ids[i] = 0;
+                        continue;
+                    }
+
+                    uint32_t range_mm_raw;
+                    std::memcpy(&range_mm_raw, packet.data() + pixel_data_offset, sizeof(uint32_t));
+                    uint32_t range_mm = le32toh(range_mm_raw) & 0x000FFFFF;
+                    range_m[i] = static_cast<double>(range_mm) * 0.001;
+                    r_min_vals[i] = r_min_subset_[subset_idx];
+                    c_ids[i] = current_c_id;
+
+                    std::memcpy(&reflectivity[i], packet.data() + pixel_data_offset + 4, sizeof(uint8_t));
+                    uint16_t signal_raw, nir_raw;
+                    std::memcpy(&signal_raw, packet.data() + pixel_data_offset + 6, sizeof(uint16_t));
+                    std::memcpy(&nir_raw, packet.data() + pixel_data_offset + 8, sizeof(uint16_t));
+                    signal[i] = le16toh(signal_raw);
+                    nir[i] = le16toh(nir_raw);
+                }
+
+                __m256d m256d_range = _mm256_load_pd(range_m);
+                __m256d m256d_r_min_vec = _mm256_load_pd(r_min_vals);
+                __m256d valid_mask = _mm256_cmp_pd(m256d_range, m256d_r_min_vec, _CMP_GE_OQ);
+
+                __m256d x1_vec = _mm256_load_pd(x_1_subset_[m_id].data() + subset_idx_base);
+                __m256d y1_vec = _mm256_load_pd(y_1_subset_[m_id].data() + subset_idx_base);
+                __m256d z1_vec = _mm256_load_pd(z_1_subset_[m_id].data() + subset_idx_base);
+                __m256d x2_val = _mm256_set1_pd(x_2_[m_id]);
+                __m256d y2_val = _mm256_set1_pd(y_2_[m_id]);
+                __m256d z2_val = _mm256_set1_pd(z_2_[m_id]);
+
+                __m256d pt_x = _mm256_fmadd_pd(m256d_range, x1_vec, x2_val);
+                __m256d pt_y = _mm256_fmadd_pd(m256d_range, y1_vec, y2_val);
+                __m256d pt_z = _mm256_fmadd_pd(m256d_range, z1_vec, z2_val);
+
+                alignas(32) double pt_x_arr[4], pt_y_arr[4], pt_z_arr[4];
+                _mm256_store_pd(pt_x_arr, pt_x);
+                _mm256_store_pd(pt_y_arr, pt_y);
+                _mm256_store_pd(pt_z_arr, pt_z);
+
+                alignas(32) double valid_mask_arr[4];
+                _mm256_store_pd(valid_mask_arr, valid_mask);
+
+                double relative_timestamp_s = (p_current_write_buffer->numberpoints > 0 || this->number_points_ > 0) && p_current_write_buffer->timestamp > 0
+                    ? std::max(0.0, current_col_timestamp_s - p_current_write_buffer->timestamp)
+                    : 0.0;
+
+                for (int i = 0; i < 4; ++i) {
+                    uint16_t subset_idx = subset_idx_base + i;
+                    if (subset_idx >= static_cast<uint16_t>(subset_channels_)) break;
+                    if (range_m[i] >= r_min_vals[i] && range_m[i] > 0) {
+                        p_current_write_buffer->x.push_back(pt_x_arr[i]);
+                        p_current_write_buffer->y.push_back(pt_y_arr[i]);
+                        p_current_write_buffer->z.push_back(pt_z_arr[i]);
+                        p_current_write_buffer->c_id.push_back(c_ids[i]);
+                        p_current_write_buffer->m_id.push_back(m_id);
+                        p_current_write_buffer->timestamp_points.push_back(current_col_timestamp_s);
+                        p_current_write_buffer->relative_timestamp.push_back(relative_timestamp_s);
+                        p_current_write_buffer->reflectivity.push_back(reflectivity[i]);
+                        p_current_write_buffer->signal.push_back(signal[i]);
+                        p_current_write_buffer->nir.push_back(nir[i]);
+
+                        this->number_points_++;
+                        if (is_first_point_of_current_frame) {
+                            p_current_write_buffer->timestamp = current_col_timestamp_s;
+                            p_current_write_buffer->frame_id = this->frame_id_;
+                            p_current_write_buffer->interframe_timedelta = (prev_frame_completed_latest_ts > 0.0)
+                                ? std::max(0.0, current_col_timestamp_s - prev_frame_completed_latest_ts) : 0.0;
+                            is_first_point_of_current_frame = false;
+                        }
+                    }
+                }
+            }
+    #else
+            // Scalar fallback remains unchanged, using original tables
+            size_t first_pixel_in_block_offset = block_offset + 16;
+            for (uint16_t c_id = 0; c_id < static_cast<uint16_t>(pixels_per_column_); c_id += channel_stride_) {
+                size_t pixel_data_offset = first_pixel_in_block_offset + c_id * 12;
+                if (pixel_data_offset + 11 >= packet.size()) {
+                    continue;
+                }
+
+                uint32_t range_mm_raw;
+                std::memcpy(&range_mm_raw, packet.data() + pixel_data_offset, sizeof(uint32_t));
+                uint32_t range_mm = le32toh(range_mm_raw) & 0x000FFFFF;
+                double range_m = static_cast<double>(range_mm) * 0.001;
+
+                if (range_m < r_min_[c_id] || range_m == 0) {
+                    continue;
+                }
+
+                uint8_t current_reflectivity;
+                std::memcpy(&current_reflectivity, packet.data() + pixel_data_offset + 4, sizeof(uint8_t));
+                uint16_t signal_raw, nir_raw;
+                std::memcpy(&signal_raw, packet.data() + pixel_data_offset + 6, sizeof(uint16_t));
+                std::memcpy(&nir_raw, packet.data() + pixel_data_offset + 8, sizeof(uint16_t));
+                uint16_t current_signal = le16toh(signal_raw);
+                uint16_t current_nir = le16toh(nir_raw);
+
+                double pt_x = range_m * x_1_[m_id][c_id] + x_2_[m_id];
+                double pt_y = range_m * y_1_[m_id][c_id] + y_2_[m_id];
+                double pt_z = range_m * z_1_[m_id][c_id] + z_2_[m_id];
+
+                double relative_timestamp_s = (p_current_write_buffer->numberpoints > 0 || this->number_points_ > 0) && p_current_write_buffer->timestamp > 0
+                    ? std::max(0.0, current_col_timestamp_s - p_current_write_buffer->timestamp)
+                    : 0.0;
+
+                p_current_write_buffer->x.push_back(pt_x);
+                p_current_write_buffer->y.push_back(pt_y);
+                p_current_write_buffer->z.push_back(pt_z);
+                p_current_write_buffer->c_id.push_back(c_id);
+                p_current_write_buffer->m_id.push_back(m_id);
+                p_current_write_buffer->timestamp_points.push_back(current_col_timestamp_s);
+                p_current_write_buffer->relative_timestamp.push_back(relative_timestamp_s);
+                p_current_write_buffer->reflectivity.push_back(current_reflectivity);
+                p_current_write_buffer->signal.push_back(current_signal);
+                p_current_write_buffer->nir.push_back(current_nir);
+
+                this->number_points_++;
+                if (is_first_point_of_current_frame) {
+                    p_current_write_buffer->timestamp = current_col_timestamp_s;
+                    p_current_write_buffer->frame_id = this->frame_id_;
+                    p_current_write_buffer->interframe_timedelta = (prev_frame_completed_latest_ts > 0.0)
+                        ? std::max(0.0, current_col_timestamp_s - prev_frame_completed_latest_ts) : 0.0;
+                    is_first_point_of_current_frame = false;
+                }
+            }
+    #endif
+        }
+
+        if (p_current_write_buffer) {
+            p_current_write_buffer->numberpoints = this->number_points_;
+        }
         frame = get_latest_lidar_frame();
     }
 
